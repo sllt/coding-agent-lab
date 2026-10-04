@@ -1,0 +1,28 @@
+# 不包含模型 ID、CLI 版本或凭据的虚构实测值。
+# REPLACE_ 字段必须被 doctor 实际结果替换，不能直接发布。
+schema_version: agentlab.profile/v1alpha1
+kind: AgentProfileDraft
+name: Grok 官方登录个人配置
+adapter: grok
+cli:
+  executable: grok
+  expected_version: REPLACE_WITH_DOCTOR_CLI_VERSION
+  auto_update: false
+model:
+  display_name: 你实际可用的 Grok 模型
+  requested_id: REPLACE_WITH_VERIFIED_MODEL_ID
+  parameters: {}
+auth:
+  kind: official_login
+  account_ref: account-grok-personal
+  credential_ref: REPLACE_WITH_APPROVED_LOCAL_CREDENTIAL_REF
+billing:
+  path: unknown
+  entitlement_verified_at: null
+execution:
+  executor: docker
+  environment_ref: demo-go-api-linux-amd64
+  permission_policy_ref: REPLACE_WITH_APPROVED_PERMISSION_POLICY
+  network_policy_ref: REPLACE_WITH_TESTED_NETWORK_POLICY
+session_policy: fresh
+rules_policy: explicit_snapshot
