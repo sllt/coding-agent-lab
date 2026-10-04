@@ -20,19 +20,36 @@ type Input struct {
 	ModelMismatch bool
 	// Assisted is the latest retry verdict when a later attempt exists.
 	// It is not counted in Pass/Fail, which stay on the first physical attempt.
-	Assisted string
+	Assisted       string
+	Repair         string
+	TrialID        string
+	AttemptID      string
+	AgentMillis    int64
+	EndToEndMillis int64
+	Interventions  int
 }
 
 type Cell struct {
-	ProfileVersionID string `json:"profile_version_id"`
-	DisplayName      string `json:"display_name"`
-	Pass             int    `json:"pass"`
-	Fail             int    `json:"fail"`
-	Inconclusive     int    `json:"inconclusive"`
-	Unverified       int    `json:"unverified"`
-	Incomplete       int    `json:"incomplete"`
-	AssistedPass     int    `json:"assisted_pass"`
-	AssistedFail     int    `json:"assisted_fail"`
+	ProfileVersionID string         `json:"profile_version_id"`
+	DisplayName      string         `json:"display_name"`
+	Pass             int            `json:"pass"`
+	Fail             int            `json:"fail"`
+	Inconclusive     int            `json:"inconclusive"`
+	Unverified       int            `json:"unverified"`
+	Incomplete       int            `json:"incomplete"`
+	AssistedPass     int            `json:"assisted_pass"`
+	AssistedFail     int            `json:"assisted_fail"`
+	RepairPass       int            `json:"repair_pass"`
+	AgentMillis      int64          `json:"agent_millis"`
+	EndToEndMillis   int64          `json:"end_to_end_millis"`
+	Interventions    int            `json:"interventions"`
+	Evidence         []EvidenceLink `json:"evidence"`
+}
+
+type EvidenceLink struct {
+	TrialID   string `json:"trial_id"`
+	AttemptID string `json:"attempt_id"`
+	Kind      string `json:"kind"`
 }
 
 type Board struct {
@@ -94,25 +111,37 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 			g.board.Cells = append(g.board.Cells, Cell{ProfileVersionID: row.ProfileID, DisplayName: row.ProfileName})
 		}
 		cell := &g.board.Cells[idx]
+		cell.AgentMillis += row.AgentMillis
+		cell.EndToEndMillis += row.EndToEndMillis
+		cell.Interventions += row.Interventions
 		if !row.Terminal {
 			cell.Incomplete++
+			cell.Evidence = append(cell.Evidence, EvidenceLink{TrialID: row.TrialID, AttemptID: row.AttemptID, Kind: "incomplete"})
 			continue
 		}
+		kind := "unverified"
 		switch domain.Verdict(row.Verdict) {
 		case domain.VerdictPass:
 			cell.Pass++
+			kind = "pass"
 		case domain.VerdictFail:
 			cell.Fail++
+			kind = "fail"
 		case domain.VerdictInconclusive:
 			cell.Inconclusive++
+			kind = "inconclusive"
 		default:
 			cell.Unverified++
 		}
+		cell.Evidence = append(cell.Evidence, EvidenceLink{TrialID: row.TrialID, AttemptID: row.AttemptID, Kind: kind})
 		switch domain.Verdict(row.Assisted) {
 		case domain.VerdictPass:
 			cell.AssistedPass++
 		case domain.VerdictFail:
 			cell.AssistedFail++
+		}
+		if domain.Verdict(row.Repair) == domain.VerdictPass {
+			cell.RepairPass++
 		}
 	}
 	var out []Board
@@ -131,6 +160,11 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 		}
 		if g.board.Reasons == nil {
 			g.board.Reasons = []string{}
+		}
+		for i := range g.board.Cells {
+			if g.board.Cells[i].Evidence == nil {
+				g.board.Cells[i].Evidence = []EvidenceLink{}
+			}
 		}
 		out = append(out, g.board)
 	}

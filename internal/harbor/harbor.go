@@ -53,3 +53,15 @@ func Import(raw []byte) (Result, error) {
 		AutoMerge: false, IsolationAssumed: "未声明。Harbor 的环境隔离不会被自动当成 agentlab 的执行器。",
 	}, nil
 }
+
+// Export writes the subset this lab can describe. It is not a full Harbor task.
+func Export(name, prompt string) map[string]any {
+	return map[string]any{
+		"schema_version":     "harbor.subset/v1",
+		"name":               name,
+		"instruction":        prompt,
+		"auto_merge":         false,
+		"unsupported_fields": []string{"environment", "verifier", "tests"},
+		"note":               "这是子集导出。环境、验收器和测试没有映射，不能当成完整 Harbor 任务。",
+	}
+}

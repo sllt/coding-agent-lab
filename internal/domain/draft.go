@@ -34,6 +34,8 @@ type TaskDraft struct {
 type TaskSource struct {
 	BaseRef       string `yaml:"base_ref" json:"base_ref"`
 	HistoryPolicy string `yaml:"history_policy" json:"history_policy"`
+	Directory     string `yaml:"directory" json:"directory"`
+	VerifierRoot  string `yaml:"verifier_root" json:"verifier_root"`
 }
 
 type ChangePolicy struct {

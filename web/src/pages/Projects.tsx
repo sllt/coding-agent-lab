@@ -3,7 +3,7 @@ import { api } from '../api.ts'
 import { Button, Card, Input, Notice, TextArea } from '../components/ui.tsx'
 
 type Project = { ID: string; Name: string }
-type Task = { ID: string; Name: string; RowVersion: number }
+type Task = { ID: string; Name: string; RowVersion: number; DraftJSON: string }
 type Version = { ID: string; Version: number; Digest: string }
 
 export function Projects() {
@@ -17,6 +17,8 @@ export function Projects() {
   const [source, setSource] = useState('')
   const [root, setRoot] = useState('')
   const [versions, setVersions] = useState<Version[]>([])
+  const [editing, setEditing] = useState('')
+  const [rowVersion, setRowVersion] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
@@ -47,7 +49,7 @@ export function Projects() {
         </div>
         <p className="mt-2 text-sm text-[#6b6258]">登记不会运行仓库里的脚本，也不会改你的源目录。</p>
       </Card>
-      {loading ? <Notice>正在读取项目。</Notice> : projects.length === 0 ? <Notice>还没有项目。</Notice> : (
+      {loading ? <Notice>正在读取项目。</Notice> : error ? null : projects.length === 0 ? <Notice>还没有项目。</Notice> : (
         <ul className="flex flex-col gap-2">
           {projects.map((project) => (
             <li key={project.ID}>
@@ -67,13 +69,32 @@ export function Projects() {
             <Input placeholder="任务名称" value={taskName} onChange={(e) => setTaskName(e.target.value)} />
             <TextArea placeholder="交给 Agent 的说明" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
             <Input placeholder="任务目录，须在允许根内。示范：fixtures/tasks/orders-pagination 的绝对路径" value={source} onChange={(e) => setSource(e.target.value)} />
-            <Button onClick={() => void api.request('POST', `/api/v1/projects/${selected}/tasks`, { name: taskName, prompt, source_dir: source, verifier_root: source }).then(() => open(selected)).catch((err: Error) => setError(err.message))}>保存草稿</Button>
+            <Button onClick={() => {
+              const draft = JSON.stringify({ name: taskName, prompt, source_dir: source, verifier_root: source })
+              const done = () => { setEditing(''); setMessage(editing ? '已更新草稿。已发布的版本没有被改写。' : '已保存草稿。'); return open(selected) }
+              const req = editing
+                ? api.request('PATCH', `/api/v1/tasks/${editing}`, { name: taskName, draft_json: draft, row_version: rowVersion })
+                : api.request('POST', `/api/v1/projects/${selected}/tasks`, { name: taskName, prompt, source_dir: source, verifier_root: source })
+              void req.then(done).catch((err: Error) => setError(err.message))
+            }}>{editing ? '更新草稿' : '保存草稿'}</Button>
           </div>
           {tasks.length === 0 ? <p className="mt-3 text-sm">这个项目还没有任务。</p> : (
             <ul className="mt-3 flex flex-col gap-2 text-sm">
               {tasks.map((task) => (
                 <li key={task.ID} className="flex flex-wrap items-center gap-2">
                   <span>{task.Name}</span>
+                  <Button tone="quiet" onClick={() => {
+                    setEditing(task.ID)
+                    setRowVersion(task.RowVersion)
+                    setTaskName(task.Name)
+                    try {
+                      const draft = JSON.parse(task.DraftJSON) as { prompt?: string; source_dir?: string }
+                      setPrompt(draft.prompt || '')
+                      setSource(draft.source_dir || '')
+                    } catch {
+                      setPrompt('')
+                    }
+                  }}>编辑草稿</Button>
                   <Button tone="quiet" onClick={() => void api.request('POST', `/api/v1/tasks/${task.ID}/publish`).then(() => api.request<{ items: Version[] }>("GET", `/api/v1/tasks/${task.ID}/versions`)).then((data) => { setVersions(data.items || []); setMessage('已发布新版本。快照已冻结，已经跑过的计划不会被改写。') }).catch((err: Error) => setError(err.message))}>发布版本</Button>
                 </li>
               ))}

@@ -63,6 +63,13 @@ func Run() int {
 	case "auth":
 		fmt.Fprintln(os.Stderr, "authentication failed: not logged in")
 		return 1
+	case "chatter":
+		fmt.Println("not logged in")
+		fmt.Println("authentication failed")
+		fmt.Println("unauthenticated")
+		fmt.Println("login required")
+		fmt.Println("auth_error")
+		return 0
 	case "noise":
 		fmt.Println(`{"state":"quarantined","type":"CleanupCompleted"}`)
 		fmt.Println("done")

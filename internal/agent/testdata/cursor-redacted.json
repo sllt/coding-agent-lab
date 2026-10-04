@@ -1,0 +1,1 @@
+{"note":"synthetic contract sample, not a captured Cursor session","events":[{"type":"assistant","text":"sample"},{"type":"Finished","verdict":"pass"},{"type":"result","usage":{"input_tokens":null,"output_tokens":null}}]}

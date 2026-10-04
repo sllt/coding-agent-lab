@@ -35,7 +35,7 @@ export function Experiments() {
         <Link className="text-sm underline" to="/experiments/new">创建</Link>
       </div>
       {error ? <Notice tone="warn">{error}</Notice> : null}
-      {loading ? <Notice>正在读取实验。</Notice> : items.length === 0 ? <Notice>还没有实验。空列表不会填演示分数。</Notice> : (
+      {loading ? <Notice>正在读取实验。</Notice> : error ? null : items.length === 0 ? <Notice>还没有实验。空列表不会填演示分数。</Notice> : (
         <Card>
           <ul className="flex flex-col gap-3 text-sm">
             {items.map((item) => (

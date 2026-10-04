@@ -17,7 +17,10 @@ export function NewExperiment() {
   const [pickedProfiles, setPickedProfiles] = useState<string[]>([])
   const [reps, setReps] = useState(1)
   const [preview, setPreview] = useState('')
+  const [mode, setMode] = useState('agent_profile')
+  const [protocol, setProtocol] = useState('single-pass-v1')
   const [error, setError] = useState('')
+  const [loadFailed, setLoadFailed] = useState(false)
 
   useEffect(() => {
     void (async () => {
@@ -38,7 +41,8 @@ export function NewExperiment() {
       }
       setTasks(taskVersions)
       setProfiles(profileVersions)
-    })().catch((err: Error) => setError(err.message)).finally(() => setLoading(false))
+      setLoadFailed(false)
+    })().catch((err: Error) => { setError(err.message); setLoadFailed(true) }).finally(() => setLoading(false))
   }, [])
 
   const formula = useMemo(() => {
@@ -47,12 +51,12 @@ export function NewExperiment() {
   }, [pickedTasks.length, pickedProfiles.length, reps])
 
   const payload = useMemo(() => ({
-    mode: 'agent_profile',
+    mode,
     task_version_ids: [...pickedTasks].sort(),
     profile_version_ids: [...pickedProfiles].sort(),
     repetitions: reps,
-    protocol: 'single-pass-v1',
-  }), [pickedTasks, pickedProfiles, reps])
+    protocol,
+  }), [mode, pickedTasks, pickedProfiles, reps, protocol])
 
   const idempotencyKey = useMemo(() => `ui-${fnv(JSON.stringify(payload))}`, [payload])
 
@@ -75,7 +79,7 @@ export function NewExperiment() {
       {loading ? <Notice>正在读取已发布的任务和配置。</Notice> : null}
       {step === 1 ? (
         <Card title="选择已发布任务">
-          {!loading && tasks.length === 0 ? <Notice>还没有已发布的任务版本。</Notice> : tasks.map((task) => (
+          {!loading && loadFailed ? null : !loading && tasks.length === 0 ? <Notice>还没有已发布的任务版本。</Notice> : tasks.map((task) => (
             <label key={task.id} className="mb-2 flex gap-2 text-sm"><input type="checkbox" checked={pickedTasks.includes(task.id)} onChange={() => toggle(pickedTasks, task.id, setPickedTasks)} />{task.label}</label>
           ))}
           <Button disabled={pickedTasks.length === 0} onClick={() => setStep(2)}>下一步</Button>
@@ -83,7 +87,7 @@ export function NewExperiment() {
       ) : null}
       {step === 2 ? (
         <Card title="选择已发布配置">
-          {!loading && profiles.length === 0 ? <Notice>还没有已发布的配置。doctor 没通过的草稿不能选。</Notice> : profiles.map((profile) => (
+          {!loading && loadFailed ? null : !loading && profiles.length === 0 ? <Notice>还没有已发布的配置。doctor 没通过的草稿不能选。</Notice> : profiles.map((profile) => (
             <label key={profile.id} className="mb-2 flex gap-2 text-sm"><input type="checkbox" checked={pickedProfiles.includes(profile.id)} onChange={() => toggle(pickedProfiles, profile.id, setPickedProfiles)} />{profile.label}</label>
           ))}
           <div className="mt-2 flex gap-2"><Button tone="quiet" onClick={() => setStep(1)}>上一步</Button><Button disabled={pickedProfiles.length === 0} onClick={() => setStep(3)}>下一步</Button></div>
@@ -95,7 +99,23 @@ export function NewExperiment() {
           <ul className="mb-3 list-disc pl-5 text-sm">
             <li>执行器：native-trusted。本机进程执行，不提供容器级隔离。请求 Docker 也会按 native-trusted 记录。</li>
             <li>网络：unrestricted。restricted 还没有强制执行。</li>
-            <li>全局并发默认 1。同一账号的清理未完成时不会再启动。</li>
+            <li>全局并发可在设置里改成 1 到 8。大于 1 时不同账号会重叠运行。同一账号的清理未完成时不会再启动。</li>
+            <li>
+              <label className="mr-3">模式
+                <select className="ml-2 rounded border px-2 py-1" value={mode} onChange={(e) => setMode(e.target.value)}>
+                  <option value="agent_profile">配置对比</option>
+                  <option value="controlled_model">同一工具只换模型</option>
+                  <option value="workflow">工作流对比</option>
+                </select>
+              </label>
+              <label>协议
+                <select className="ml-2 rounded border px-2 py-1" value={protocol} onChange={(e) => setProtocol(e.target.value)}>
+                  <option value="single-pass-v1">single-pass-v1</option>
+                  <option value="repair-once-v1">repair-once-v1 · 失败后再修一次</option>
+                </select>
+              </label>
+            </li>
+            {mode === 'controlled_model' ? <li>受控模型模式要求同一个适配器、至少两个不同的模型 ID。服务端若发现实际模型 ID 和请求不一致，会标成不可比。</li> : null}
             <li>费用观测：未知。未知不会被显示成 0。</li>
             <li>重复次数（1 到 {maxReps}）
               <input className="ml-2 w-16 rounded border px-2" type="number" min={1} max={maxReps} value={reps} onChange={(e) => setRepetitions(Number(e.target.value))} />

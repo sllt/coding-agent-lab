@@ -175,7 +175,7 @@ func TestCursorLaunchDoesNotReceiveSolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft, _ := json.Marshal(ProfileSnapshot{Adapter: "cursor", Model: "cursor-local", Executor: "docker", Network: "restricted", DisplayName: "Cursor", Executable: script})
+	draft, _ := json.Marshal(ProfileSnapshot{Adapter: "cursor", Model: "cursor-local", Executor: "docker", Network: "restricted", DisplayName: "Cursor", Executable: script, BillingPath: "subscription", EntitlementVerifiedAt: "2026-10-04T00:00:00Z"})
 	profile, err := svc.Store.CreateProfile(ctx, "Cursor", account.ID, string(draft))
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,15 @@ func TestAuthFailureAbortsAndUsageIsStored(t *testing.T) {
 	}
 	records, err := svc.Store.ListUsage(ctx, attempts[0].ID)
 	if err != nil || len(records) != 1 || records[0].InputTokens == nil || *records[0].InputTokens != 3 || records[0].OutputTokens == nil || *records[0].OutputTokens != 4 {
-		t.Fatalf("usage %+v err %v", records, err)
+		raw, _ := os.ReadFile(filepath.Join(svc.DataDir, "attempts", attempts[0].ID, "events.ndjson"))
+		work := filepath.Join(svc.DataDir, "attempts", attempts[0].ID, "work")
+		entries, _ := os.ReadDir(work)
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		logBody, _ := os.ReadFile(filepath.Join(work, "agent.log"))
+		t.Fatalf("usage %+v err %v state %s files %v log %q events %s", records, err, attempts[0].State, names, logBody, raw)
 	}
 }
 

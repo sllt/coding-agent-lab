@@ -29,6 +29,7 @@ import (
 	"github.com/sllt/agentlab/internal/doctor"
 	"github.com/sllt/agentlab/internal/domain"
 	"github.com/sllt/agentlab/internal/harbor"
+	"github.com/sllt/agentlab/internal/stats"
 	"github.com/sllt/agentlab/internal/store/sqlite"
 )
 
@@ -94,8 +95,16 @@ func (a *API) Register(appPi *pi.App) {
 	appPi.GET("/api/v1/artifacts/{id}/download", a.download)
 	appPi.GET("/api/v1/comparisons", a.comparisons)
 	appPi.GET("/api/v1/settings", a.settings)
+	appPi.PATCH("/api/v1/settings", a.patchSettings)
+	appPi.GET("/api/v1/audit", a.listAudit)
 	appPi.POST("/api/v1/maintenance/backup", a.backup)
+	appPi.POST("/api/v1/maintenance/retention", a.retention)
+	appPi.POST("/api/v1/maintenance/quarantine", a.cleanQuarantine)
+	appPi.GET("/api/v1/upgrade", a.upgrade)
 	appPi.POST("/api/v1/imports/harbor", a.importHarbor)
+	appPi.POST("/api/v1/exports/harbor", a.exportHarbor)
+	appPi.POST("/api/v1/tasks/{id}/flaky", a.markFlaky)
+	appPi.POST("/api/v1/trials/{id}/adopt", a.adoptPatch)
 	appPi.POST("/api/v1/webhooks", a.webhook)
 }
 
@@ -313,6 +322,35 @@ func (a *API) createProject(c *pi.Context) (any, error) {
 	spec := string(body.SourceSpec)
 	if spec == "" || spec == "null" {
 		spec = `{"kind":"local"}`
+	}
+	if strings.Contains(strings.ToLower(spec), "file://") {
+		return fail(c, 422, "unexecutable", "file:// 不能作为项目来源")
+	}
+	var remote struct {
+		Kind         string   `json:"kind"`
+		URL          string   `json:"url"`
+		AllowedHosts []string `json:"allowed_hosts"`
+	}
+	_ = json.Unmarshal([]byte(spec), &remote)
+	if remote.Kind == "remote" {
+		if !strings.HasPrefix(remote.URL, "https://") {
+			return fail(c, 422, "unexecutable", "远程来源只接受 https")
+		}
+		host := remote.URL
+		if i := strings.Index(strings.TrimPrefix(host, "https://"), "/"); i >= 0 {
+			host = strings.TrimPrefix(remote.URL, "https://")[:i]
+		} else {
+			host = strings.TrimPrefix(remote.URL, "https://")
+		}
+		allowed := false
+		for _, item := range remote.AllowedHosts {
+			if item == host {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return fail(c, 422, "unexecutable", "远程主机不在允许列表里")
+		}
 	}
 	project, err := a.svc.Store.CreateProject(c, body.Name, spec)
 	if err != nil {
@@ -672,6 +710,9 @@ func (a *API) retryTrial(c *pi.Context) (any, error) {
 	if err := a.svc.Store.PrepareRetry(c, trial.ID); err != nil {
 		return a.fromErr(c, err)
 	}
+	if trial.CurrentAttemptID != "" {
+		_ = a.svc.Store.InsertIntervention(c, trial.CurrentAttemptID, "manual_retry", body.Reason)
+	}
 	account, err := a.svc.Store.ProfileAccount(c, trial.ProfileVersionID)
 	if err != nil {
 		return a.fromErr(c, err)
@@ -755,19 +796,29 @@ func (a *API) usage(c *pi.Context) (any, error) {
 
 func (a *API) addReview(c *pi.Context) (any, error) {
 	var body struct {
-		Kind string `json:"kind"`
-		Body string `json:"body"`
+		Kind          string `json:"kind"`
+		Body          string `json:"body"`
+		Rubric        string `json:"rubric"`
+		Blind         bool   `json:"blind"`
+		ContextBudget int    `json:"context_budget_bytes"`
 	}
 	if err := c.Bind(&body); err != nil || body.Body == "" {
 		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
+	}
+	if body.ContextBudget <= 0 {
+		body.ContextBudget = 8192
+	}
+	if strings.TrimSpace(body.Rubric) == "" {
+		body.Rubric = "可读性、维护成本和潜在缺陷。证据不足就写不足，不要求打分。"
 	}
 	attempt, err := a.svc.Store.GetAttempt(c, c.PathParam("id"))
 	if err != nil {
 		return a.fromErr(c, err)
 	}
 	before := attempt.Verdict
-	raw, _ := json.Marshal(body)
-	if err := a.svc.Store.AddReview(c, attempt.ID, body.Kind, string(raw)); err != nil {
+	raw, _ := json.Marshal(map[string]any{"kind": body.Kind, "body": body.Body, "blind": body.Blind})
+	rubric, _ := json.Marshal(map[string]any{"rubric": body.Rubric, "blind": body.Blind, "context_budget_bytes": body.ContextBudget, "model_name_hidden": body.Blind})
+	if err := a.svc.Store.AddReview(c, attempt.ID, body.Kind, string(rubric), string(raw)); err != nil {
 		return a.fromErr(c, err)
 	}
 	after, err := a.svc.Store.GetAttempt(c, attempt.ID)
@@ -777,18 +828,24 @@ func (a *API) addReview(c *pi.Context) (any, error) {
 	if after.Verdict != before {
 		return fail(c, http.StatusConflict, "conflict", "人工意见不能改写验收结论")
 	}
-	return ok(c, http.StatusCreated, map[string]any{"verdict": after.Verdict, "review_changes_verdict": false})
+	return ok(c, http.StatusCreated, map[string]any{
+		"verdict": after.Verdict, "review_changes_verdict": false,
+		"blind": body.Blind, "context_budget_bytes": body.ContextBudget, "model_name_hidden": body.Blind,
+	})
 }
 
 func (a *API) listReviews(c *pi.Context) (any, error) {
-	items, err := a.svc.Store.ListReviews(c, c.PathParam("id"))
+	items, rubrics, err := a.svc.Store.ListReviewMeta(c, c.PathParam("id"))
 	if err != nil {
 		return a.fromErr(c, err)
 	}
 	if items == nil {
 		items = []string{}
 	}
-	return ok(c, http.StatusOK, map[string]any{"items": items})
+	if rubrics == nil {
+		rubrics = []string{}
+	}
+	return ok(c, http.StatusOK, map[string]any{"items": items, "rubrics": rubrics, "note": "盲评记录不附带模型名称。意见不能改写硬验收。"})
 }
 
 func (a *API) download(c *pi.Context) (any, error) {
@@ -838,7 +895,9 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 		return a.fromErr(c, err)
 	}
 	var rows []compare.Input
+	var statRows []stats.Row
 	tasks := map[string]struct{}{}
+	var excluded []string
 	for _, trial := range trials {
 		exp, err := a.svc.Store.GetExperiment(c, trial.ExperimentID)
 		if err != nil {
@@ -858,23 +917,56 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 		verdict := trial.Verdict
 		terminal := domain.ExecutionState(trial.ExecutionState).Terminal()
 		assisted := ""
+		repair := ""
+		attemptID := ""
+		var agentMs, e2e int64
+		interventions := 0
+		modelMismatch := false
 		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil && len(attempts) > 0 {
 			verdict = attempts[0].Verdict
 			terminal = domain.ExecutionState(attempts[0].State).Terminal()
+			attemptID = attempts[0].ID
 			var runtime struct {
 				Executor string `json:"executor"`
 				Network  string `json:"network"`
+				Mismatch bool   `json:"model_resolution_mismatch"`
+				Phases   struct {
+					Agent int64 `json:"agent_ms"`
+					E2E   int64 `json:"end_to_end_ms"`
+				} `json:"phases"`
 			}
-			_ = json.Unmarshal([]byte(attempts[len(attempts)-1].RuntimeJSON), &runtime)
+			_ = json.Unmarshal([]byte(attempts[0].RuntimeJSON), &runtime)
 			if runtime.Executor != "" {
 				executor = runtime.Executor
 			}
 			if runtime.Network != "" {
 				network = runtime.Network
 			}
-			if len(attempts) > 1 && domain.ExecutionState(attempts[len(attempts)-1].State).Terminal() {
-				assisted = attempts[len(attempts)-1].Verdict
+			agentMs = runtime.Phases.Agent
+			e2e = runtime.Phases.E2E
+			modelMismatch = runtime.Mismatch
+			if n, err := a.svc.Store.CountInterventions(c, attempts[0].ID); err == nil {
+				interventions += n
 			}
+			if len(attempts) > 1 {
+				interventions++
+				if domain.ExecutionState(attempts[len(attempts)-1].State).Terminal() {
+					last := attempts[len(attempts)-1]
+					if strings.HasPrefix(last.Reason, "protocol_repair") {
+						repair = last.Verdict
+					} else {
+						assisted = last.Verdict
+					}
+				}
+			}
+		}
+		flag, err := a.svc.Store.GetTaskFlag(c, trial.TaskVersionID)
+		if err != nil {
+			return a.fromErr(c, err)
+		}
+		if flag.Flaky {
+			excluded = append(excluded, trial.TaskVersionID)
+			continue
 		}
 		if executor == "" || executor == "docker" {
 			executor = "native-trusted"
@@ -883,10 +975,30 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 			network = "unrestricted"
 		}
 		tasks[trial.TaskVersionID] = struct{}{}
+		profileDig := pv.Digest
+		if exp.Mode == domain.ModeControlledModel {
+			profileDig, _ = domain.Digest(map[string]any{"adapter": snap.Adapter, "executor": executor, "network": network})
+		}
+		pass, fail, unresolved := 0, 0, 0
+		if terminal {
+			switch domain.Verdict(verdict) {
+			case domain.VerdictPass:
+				pass = 1
+			case domain.VerdictFail:
+				fail = 1
+			default:
+				unresolved = 1
+			}
+		} else {
+			unresolved = 1
+		}
+		statRows = append(statRows, stats.Row{TaskID: trial.TaskVersionID, ProfileID: trial.ProfileVersionID, Pass: pass, Fail: fail, Unresolved: unresolved})
 		rows = append(rows, compare.Input{
 			Mode: exp.Mode, Protocol: exp.ProtocolJSON, TaskID: trial.TaskVersionID, TaskDigest: tv.Digest,
-			ProfileID: trial.ProfileVersionID, ProfileName: snap.DisplayName, ProfileDig: pv.Digest,
+			ProfileID: trial.ProfileVersionID, ProfileName: snap.DisplayName, ProfileDig: profileDig,
 			Executor: executor, Network: network, Verdict: verdict, Terminal: terminal, Assisted: assisted,
+			Repair: repair, TrialID: trial.ID, AttemptID: attemptID, AgentMillis: agentMs, EndToEndMillis: e2e,
+			Interventions: interventions, ModelMismatch: modelMismatch,
 		})
 	}
 	boards, err := compare.Boards(rows, len(tasks))
@@ -896,7 +1008,12 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 	if boards == nil {
 		boards = []compare.Board{}
 	}
-	return ok(c, http.StatusOK, map[string]any{"boards": boards})
+	if excluded == nil {
+		excluded = []string{}
+	}
+	return ok(c, http.StatusOK, map[string]any{
+		"boards": boards, "statistics": stats.Aggregate(statRows, 20261004, 200), "excluded_flaky": excluded,
+	})
 }
 
 func (a *API) settings(c *pi.Context) (any, error) {
@@ -908,6 +1025,12 @@ func (a *API) settings(c *pi.Context) (any, error) {
 		"maintenance":        a.svc.Maintenance(),
 		"webhook_configured": err == nil,
 		"credential_display": "只显示引用，不回传密钥",
+		"global_limit":       a.svc.LoadSettings().GlobalLimit,
+		"retention":          a.svc.LoadSettings().Retention,
+		"disk_quota_bytes":   a.svc.LoadSettings().DiskQuotaBytes,
+		"release_rss":        "未测",
+		"process_rss_bytes":  processRSS(),
+		"process_rss_note":   "这是当前进程的 VmRSS，不是发布容量目标。",
 	})
 }
 
@@ -977,7 +1100,26 @@ func (a *API) webhook(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	return ok(c, http.StatusOK, map[string]any{"accepted": true, "duplicate": dup, "auto_merge": false})
+	created := ""
+	if !dup {
+		var req app.ExperimentRequest
+		if json.Unmarshal(body, &req) == nil && len(req.TaskVersionIDs) > 0 && len(req.ProfileVersionIDs) > 0 {
+			req.Actor = "webhook"
+			if req.IdempotencyKey == "" {
+				req.IdempotencyKey = "wh-" + dedupe
+			}
+			exp, err := a.svc.SubmitExperiment(c, req)
+			if err != nil {
+				_ = a.svc.Store.InsertNotification(c, "webhook_result", loopbackNotify(body), string(body))
+				return fail(c, 422, "unexecutable", "已验签，但没有创建实验")
+			}
+			created = exp.ID
+		}
+		note, _ := json.Marshal(map[string]any{"experiment_id": created, "duplicate": false, "auto_merge": false})
+		_ = a.svc.Store.InsertNotification(c, "webhook_result", loopbackNotify(body), string(note))
+		a.svc.RetryNotifications(c)
+	}
+	return ok(c, http.StatusOK, map[string]any{"accepted": true, "duplicate": dup, "auto_merge": false, "experiment_id": created})
 }
 
 func (a *API) exportExperiment(c *pi.Context) (any, error) {
@@ -1004,9 +1146,13 @@ func (a *API) exportExperiment(c *pi.Context) (any, error) {
 		rows = append(rows, item)
 	}
 	payload := map[string]any{
-		"experiment_id": exp.ID, "protocol": exp.ProtocolJSON, "trials": rows,
+		"schema_version": "agentlab.export/v1",
+		"experiment_id":  exp.ID, "protocol": exp.ProtocolJSON, "trials": rows,
 		"included_credentials": false, "included_reference_solution": false,
-		"note": "导出不含凭据、隐藏测试和参考解。",
+		"truncated": false, "redacted": false,
+		"tool_version": "agentlab",
+		"note":         "导出不含凭据、隐藏测试和参考解。截断和脱敏标记为 false 表示这份 JSON 没有裁掉字段；原始日志仍可能在 Attempt 文件里被 8 MiB 内存上限截断。",
+		"manifest":     map[string]any{"files": []string{"report.json"}, "missing": []string{}},
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -1133,7 +1279,7 @@ func formula(tasks, profiles, repetitions int) string {
 }
 
 func (a *API) summarizeFirst(c *pi.Context, trials []sqlite.Trial) map[string]any {
-	var done, pass, fail, inc, unver, incomplete, assisted int
+	var done, pass, fail, inc, unver, incomplete, assisted, repair int
 	for _, trial := range trials {
 		state := trial.ExecutionState
 		verdict := trial.Verdict
@@ -1141,7 +1287,11 @@ func (a *API) summarizeFirst(c *pi.Context, trials []sqlite.Trial) map[string]an
 			state = attempts[0].State
 			verdict = attempts[0].Verdict
 			if len(attempts) > 1 && attempts[len(attempts)-1].Verdict == string(domain.VerdictPass) {
-				assisted++
+				if strings.HasPrefix(attempts[len(attempts)-1].Reason, "protocol_repair") {
+					repair++
+				} else {
+					assisted++
+				}
 			}
 		}
 		if !domain.ExecutionState(state).Terminal() {
@@ -1163,8 +1313,8 @@ func (a *API) summarizeFirst(c *pi.Context, trials []sqlite.Trial) map[string]an
 	return map[string]any{
 		"planned": len(trials), "terminal": done, "incomplete": incomplete,
 		"pass": pass, "fail": fail, "inconclusive": inc, "unverified": unver,
-		"assisted_pass": assisted,
-		"note":         "通过数来自每个 Trial 的第一次物理执行。人工重试另计，不会进入首 Attempt 通过率。未完成样本单独列出。",
+		"assisted_pass": assisted, "repair_pass": repair,
+		"note": "通过数来自每个 Trial 的第一次物理执行。人工重试和 repair-once 的后续通过另计，不会进入首 Attempt 通过率。未完成样本单独列出。",
 	}
 }
 

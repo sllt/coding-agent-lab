@@ -344,9 +344,12 @@ func (s *Store) ListExperiments(ctx context.Context) ([]Experiment, error) {
 	return out, nil
 }
 
-func (s *Store) AddReview(ctx context.Context, attemptID, kind, body string) error {
+func (s *Store) AddReview(ctx context.Context, attemptID, kind, rubric, body string) error {
+	if rubric == "" {
+		rubric = `{"rubric":"v1"}`
+	}
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO reviews(id, attempt_id, kind, rubric_json, body_json, created_at) VALUES(?,?,?,?,?,?)`, domain.NewID("rev"), attemptID, kind, `{"rubric":"v1"}`, body, now())
+		_, err := tx.ExecContext(ctx, `INSERT INTO reviews(id, attempt_id, kind, rubric_json, body_json, created_at) VALUES(?,?,?,?,?,?)`, domain.NewID("rev"), attemptID, kind, rubric, body, now())
 		return err
 	})
 }

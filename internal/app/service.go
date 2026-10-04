@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -50,20 +51,23 @@ type TaskSnapshot struct {
 }
 
 type ProfileSnapshot struct {
-	Adapter      string `json:"adapter"`
-	Model        string `json:"model"`
-	FakeMode     string `json:"fake_mode"`
-	Executor     string `json:"executor"`
-	Network      string `json:"network"`
-	DisplayName  string `json:"display_name"`
-	Executable   string `json:"executable,omitempty"`
-	ApproveTools bool   `json:"approve_tools,omitempty"`
+	Adapter               string `json:"adapter"`
+	Model                 string `json:"model"`
+	FakeMode              string `json:"fake_mode"`
+	Executor              string `json:"executor"`
+	Network               string `json:"network"`
+	DisplayName           string `json:"display_name"`
+	Executable            string `json:"executable,omitempty"`
+	ApproveTools          bool   `json:"approve_tools,omitempty"`
+	BillingPath           string `json:"billing_path,omitempty"`
+	EntitlementVerifiedAt string `json:"entitlement_verified_at,omitempty"`
+	ResolvedModel         string `json:"resolved_model,omitempty"`
 }
 
 var (
-	ErrUnexecutable   = errors.New("unexecutable")
-	ErrMaintenance    = errors.New("maintenance")
-	ErrAdminExists    = errors.New("admin exists")
+	ErrUnexecutable = errors.New("unexecutable")
+	ErrMaintenance  = errors.New("maintenance")
+	ErrAdminExists  = errors.New("admin exists")
 )
 
 func (s *Service) SetMaintenance(on bool) { s.maint.Store(on) }
@@ -226,6 +230,14 @@ func (s *Service) PublishProfile(ctx context.Context, profileID string) (sqlite.
 	if err != nil {
 		return sqlite.ProfileVersion{}, err
 	}
+	if snap.Adapter != "fixture" {
+		if snap.BillingPath != "subscription" && snap.BillingPath != "metered_api" {
+			return sqlite.ProfileVersion{}, ErrUnexecutable
+		}
+		if strings.TrimSpace(snap.EntitlementVerifiedAt) == "" {
+			return sqlite.ProfileVersion{}, ErrUnexecutable
+		}
+	}
 	if !report.StaticPassed || strings.Contains(profile.DraftJSON, "REPLACE_") {
 		return sqlite.ProfileVersion{}, ErrUnexecutable
 	}
@@ -241,13 +253,13 @@ func (s *Service) PublishProfile(ctx context.Context, profileID string) (sqlite.
 }
 
 type ExperimentRequest struct {
-	Actor             string
-	IdempotencyKey    string
-	Mode              string
-	TaskVersionIDs    []string
-	ProfileVersionIDs []string
-	Repetitions       int
-	Protocol          string
+	Actor             string   `json:"actor,omitempty"`
+	IdempotencyKey    string   `json:"idempotency_key,omitempty"`
+	Mode              string   `json:"mode"`
+	TaskVersionIDs    []string `json:"task_version_ids"`
+	ProfileVersionIDs []string `json:"profile_version_ids"`
+	Repetitions       int      `json:"repetitions"`
+	Protocol          string   `json:"protocol"`
 }
 
 func (s *Service) SubmitExperiment(ctx context.Context, req ExperimentRequest) (sqlite.Experiment, error) {
@@ -260,17 +272,49 @@ func (s *Service) SubmitExperiment(ctx context.Context, req ExperimentRequest) (
 	if req.Mode == "" {
 		req.Mode = domain.ModeAgentProfile
 	}
+	if req.Mode != domain.ModeAgentProfile && req.Mode != domain.ModeControlledModel && req.Mode != domain.ModeWorkflow {
+		return sqlite.Experiment{}, ErrUnexecutable
+	}
 	if req.Repetitions <= 0 || req.Repetitions > domain.MaxRepetitions || len(req.TaskVersionIDs) == 0 || len(req.ProfileVersionIDs) == 0 || req.IdempotencyKey == "" {
 		return sqlite.Experiment{}, ErrUnexecutable
+	}
+	if err := s.quotaBlocked(); err != nil {
+		return sqlite.Experiment{}, err
 	}
 	for _, id := range req.TaskVersionIDs {
 		if _, err := s.Store.GetTaskVersion(ctx, id); err != nil {
 			return sqlite.Experiment{}, err
 		}
 	}
+	var profiles []ProfileSnapshot
 	for _, id := range req.ProfileVersionIDs {
-		if _, err := s.Store.GetProfileVersion(ctx, id); err != nil {
+		pv, err := s.Store.GetProfileVersion(ctx, id)
+		if err != nil {
 			return sqlite.Experiment{}, err
+		}
+		var snap ProfileSnapshot
+		if json.Unmarshal([]byte(pv.SnapshotJSON), &snap) != nil {
+			return sqlite.Experiment{}, ErrUnexecutable
+		}
+		profiles = append(profiles, snap)
+	}
+	if req.Mode == domain.ModeControlledModel {
+		if len(profiles) < 2 {
+			return sqlite.Experiment{}, ErrUnexecutable
+		}
+		adapter := profiles[0].Adapter
+		seenModel := map[string]struct{}{}
+		for _, snap := range profiles {
+			if snap.Adapter != adapter || adapter == "" {
+				return sqlite.Experiment{}, ErrUnexecutable
+			}
+			if snap.Model == "" {
+				return sqlite.Experiment{}, ErrUnexecutable
+			}
+			seenModel[snap.Model] = struct{}{}
+		}
+		if len(seenModel) < 2 {
+			return sqlite.Experiment{}, ErrUnexecutable
 		}
 	}
 	var trials []sqlite.NewTrial
@@ -307,16 +351,10 @@ func (s *Service) Loop(ctx context.Context) error {
 			if s.Maintenance() {
 				continue
 			}
+			s.RetryNotifications(ctx)
 			_ = s.Pump(ctx, s.limit())
 		}
 	}
-}
-
-func (s *Service) limit() int {
-	if s.GlobalLimit <= 0 {
-		return 1
-	}
-	return s.GlobalLimit
 }
 
 func (s *Service) wall() int {
@@ -326,8 +364,10 @@ func (s *Service) wall() int {
 	return s.WallSeconds
 }
 
-// Pump starts queued trials up to the global limit. A single trial failure
-// does not stop the loop.
+// Pump starts queued trials up to the global limit. Admission is serial so the
+// second CreateAttempt happens before the first execute returns. The runs
+// themselves overlap when the limit is greater than one. A single trial
+// failure does not stop the loop.
 func (s *Service) Pump(ctx context.Context, globalLimit int) error {
 	if globalLimit <= 0 {
 		globalLimit = s.limit()
@@ -336,32 +376,48 @@ func (s *Service) Pump(ctx context.Context, globalLimit int) error {
 	if err != nil {
 		return err
 	}
+	var wg sync.WaitGroup
 	for _, trial := range queued {
 		if s.Maintenance() {
-			return nil
+			break
 		}
 		active, err := s.Store.GlobalActiveAttempts(ctx)
 		if err != nil {
+			wg.Wait()
 			return err
 		}
 		if active >= globalLimit {
-			return nil
+			break
 		}
 		account, err := s.Store.ProfileAccount(ctx, trial.ProfileVersionID)
 		if err != nil {
+			wg.Wait()
 			return err
 		}
-		attempt, err := s.Store.CreateAttempt(ctx, trial.ID, account, NativeRuntime(), "", globalLimit, 1)
+		reason := ""
+		repairMark := filepath.Join(s.DataDir, "repairs", trial.ID)
+		if _, err := os.Stat(repairMark); err == nil {
+			reason = "protocol_repair"
+			_ = os.Remove(repairMark)
+		}
+		attempt, err := s.Store.CreateAttempt(ctx, trial.ID, account, NativeRuntime(), reason, globalLimit, 1)
 		if err != nil {
 			if errors.Is(err, sqlite.ErrConflict) || errors.Is(err, sqlite.ErrCapacity) || errors.Is(err, sqlite.ErrAccountBlocked) {
 				continue
 			}
+			wg.Wait()
 			return err
 		}
-		if err := s.execute(ctx, trial, attempt); err != nil {
-			_ = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), err.Error())
-		}
+		wg.Add(1)
+		go func(trial sqlite.Trial, attempt sqlite.Attempt) {
+			defer wg.Done()
+			if err := s.execute(ctx, trial, attempt); err != nil {
+				_ = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), err.Error())
+			}
+			s.scheduleRepair(ctx, trial.ID)
+		}(trial, attempt)
 	}
+	wg.Wait()
 	return nil
 }
 
@@ -468,10 +524,12 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		}
 		spec.Launch.Env = env
 	}
-	pr, pw := io.Pipe()
-	start, err := json.Marshal(map[string]any{"type": "Start", "token": spec.Token, "spec": spec})
-	if err != nil {
-		return err
+	if profile.ResolvedModel != "" && profile.ResolvedModel != profile.Model {
+		_ = s.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(withIdentity(attempt.RuntimeJSON, identityToken, 0, ""), map[string]any{
+			"model_resolution_mismatch": true,
+			"requested_model":           profile.Model,
+			"resolved_model":            profile.ResolvedModel,
+		}))
 	}
 	attemptDir := filepath.Join(s.DataDir, "attempts", attempt.ID)
 	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
@@ -482,17 +540,17 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		return err
 	}
 	output := &eventSink{file: eventFile}
-	errCh := make(chan error, 1)
-	go func() { errCh <- runner.Serve(ctx, pr, output) }()
-	if _, err := pw.Write(append(start, '\n')); err != nil {
-		_ = eventFile.Close()
-		return err
+	queuedAt := time.Now()
+	if parsed, err := time.Parse(time.RFC3339Nano, attempt.CreatedAt); err == nil {
+		queuedAt = parsed
 	}
-	watchStop := make(chan struct{})
-	go s.watch(ctx, watchStop, pw, trial.ID, attempt, identityToken)
-	runErr := <-errCh
-	close(watchStop)
-	_ = pw.Close()
+	runStart := time.Now()
+	runErr := s.runRunner(ctx, spec, output, trial.ID, attempt, identityToken)
+	agentMs := time.Since(runStart).Milliseconds()
+	queueMs := runStart.Sub(queuedAt).Milliseconds()
+	if queueMs < 0 {
+		queueMs = 0
+	}
 	output.finish()
 	_ = eventFile.Sync()
 	_ = eventFile.Close()
@@ -501,6 +559,7 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	s.recordUsage(ctx, attempt.ID, events)
 	s.persistIdentity(ctx, attempt, identityToken)
 	if runErr != nil {
+		s.stampPhases(ctx, attempt, queueMs, agentMs, 0)
 		return runErr
 	}
 	_ = s.noteStarted(ctx, attempt)
@@ -513,13 +572,16 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		return err
 	}
 	cancelled := fresh.CancelRequested || current.State == string(domain.ExecCancelling)
-	logBody, _ := os.ReadFile(filepath.Join(work, "agent.log"))
-	if !cancelled && authenticationFailed(logBody) {
+	if !cancelled && runnerAuthFailed(events) {
 		_ = s.Store.BlockAccount(ctx, attempt.AccountID, "authentication_failed")
-		_ = s.Store.Audit(ctx, "control", "block_account", attempt.AccountID, `{"reason":"authentication_failed"}`)
+		_ = s.Store.Audit(ctx, "control", "block_account", attempt.AccountID, `{"reason":"authentication_failed","source":"runner"}`)
+		s.stampPhases(ctx, attempt, queueMs, agentMs, 0)
 		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "authentication_failed")
 	}
+	verifyStart := time.Now()
 	verdict, cleanup, reason := s.judge(ctx, snap, profile, tv.Digest, attempt.ID, base, work, events)
+	verifyMs := time.Since(verifyStart).Milliseconds()
+	s.stampPhases(ctx, attempt, queueMs, agentMs, verifyMs)
 	if cancelled {
 		if current.State == string(domain.ExecRunning) || current.State == string(domain.ExecPreparing) {
 			_ = s.Store.AdvanceAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCancelling))
@@ -540,10 +602,85 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	if reason != "" && verdict == domain.VerdictPass && profile.FakeMode == "forge" {
 		verdict = domain.VerdictInconclusive
 	}
-	return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCompleted), string(verdict), string(cleanup), reason)
+	if attempt.Reason == "protocol_repair" {
+		if reason == "" {
+			reason = "protocol_repair"
+		} else {
+			reason = "protocol_repair:" + reason
+		}
+	}
+	if err := s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCompleted), string(verdict), string(cleanup), reason); err != nil {
+		return err
+	}
+	s.saveStagePatch(attempt)
+	return nil
 }
 
-func (s *Service) watch(ctx context.Context, stop <-chan struct{}, pw *io.PipeWriter, trialID string, attempt sqlite.Attempt, identityToken string) {
+// runRunner starts `agentlab runner` as its own process. That process does not
+// open the control database. A panic inside it cannot take down the control plane.
+func (s *Service) runRunner(ctx context.Context, spec runner.Spec, output *eventSink, trialID string, attempt sqlite.Attempt, identityToken string) error {
+	bin := s.ExecPath
+	if bin == "" {
+		var err error
+		bin, err = os.Executable()
+		if err != nil {
+			return err
+		}
+	}
+	cmd := exec.Command(bin, "runner")
+	env := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, "AGENTLAB_DATA=") {
+			continue
+		}
+		env = append(env, item)
+	}
+	cmd.Env = env
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	// Wait closes a StdoutPipe before a concurrent reader is guaranteed to
+	// drain it. Copying into an io.Pipe lets Wait finish the copy first.
+	stdoutR, stdoutW := io.Pipe()
+	cmd.Stdout = stdoutW
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		_ = stdoutW.Close()
+		return err
+	}
+	copyDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(output, stdoutR)
+		close(copyDone)
+	}()
+	start, err := json.Marshal(map[string]any{"type": "Start", "token": spec.Token, "spec": spec})
+	if err != nil {
+		_ = stdoutW.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		<-copyDone
+		return err
+	}
+	if _, err := stdin.Write(append(start, '\n')); err != nil {
+		_ = stdin.Close()
+		_ = stdoutW.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		<-copyDone
+		return err
+	}
+	watchStop := make(chan struct{})
+	go s.watch(ctx, watchStop, stdin, trialID, attempt, identityToken)
+	waitErr := cmd.Wait()
+	close(watchStop)
+	_ = stdin.Close()
+	_ = stdoutW.Close()
+	<-copyDone
+	return waitErr
+}
+
+func (s *Service) watch(ctx context.Context, stop <-chan struct{}, pw io.Writer, trialID string, attempt sqlite.Attempt, identityToken string) {
 	ticker := time.NewTicker(30 * time.Millisecond)
 	defer ticker.Stop()
 	marked := false
@@ -575,7 +712,7 @@ func (s *Service) watch(ctx context.Context, stop <-chan struct{}, pw *io.PipeWr
 	}
 }
 
-func (s *Service) writeControl(pw *io.PipeWriter, typ, reason string) {
+func (s *Service) writeControl(pw io.Writer, typ, reason string) {
 	b, err := json.Marshal(map[string]string{"type": typ, "reason": reason})
 	if err != nil {
 		return
@@ -751,7 +888,7 @@ func (e *eventSink) keep(line []byte) {
 		n, _ := e.file.Write(line)
 		e.fileN += int64(n)
 	}
-	runnerLine := bytes.Contains(line, []byte(`"origin":"runner"`))
+	runnerLine := runnerOrigin(line)
 	if runnerLine || e.agentBytes+len(line) <= maxEventMemory {
 		e.mem = append(e.mem, line...)
 		if !runnerLine {
@@ -786,8 +923,33 @@ func (e *eventSink) Bytes() []byte {
 }
 
 func (s *Service) persistIdentity(ctx context.Context, attempt sqlite.Attempt, token string) bool {
-	id, ok := runner.RecallIdentity(token)
-	if !ok {
+	raw, err := os.ReadFile(filepath.Join(s.DataDir, "attempts", attempt.ID, "events.ndjson"))
+	if err != nil {
+		return false
+	}
+	var pid int
+	var start string
+	found := false
+	for _, line := range bytesSplit(raw) {
+		var ev struct {
+			Origin  string `json:"origin"`
+			Type    string `json:"type"`
+			Payload struct {
+				PID   int    `json:"pid"`
+				Start string `json:"starttime"`
+				Token string `json:"token"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if ev.Origin == "runner" && ev.Type == "IdentityRecorded" && ev.Payload.Token == token && ev.Payload.PID > 0 && ev.Payload.Start != "" {
+			pid = ev.Payload.PID
+			start = ev.Payload.Start
+			found = true
+		}
+	}
+	if !found {
 		return false
 	}
 	current, err := s.Store.GetAttempt(ctx, attempt.ID)
@@ -795,7 +957,7 @@ func (s *Service) persistIdentity(ctx context.Context, attempt sqlite.Attempt, t
 	if err == nil && current.RuntimeJSON != "" {
 		base = current.RuntimeJSON
 	}
-	return s.Store.UpdateRuntime(ctx, attempt.ID, withIdentity(base, token, id.PID, id.StartTime)) == nil
+	return s.Store.UpdateRuntime(ctx, attempt.ID, withIdentity(base, token, pid, start)) == nil
 }
 
 func NativeRuntime() string {
@@ -857,10 +1019,26 @@ func runnerQuarantined(events []byte) bool {
 	return false
 }
 
-func authenticationFailed(logBody []byte) bool {
-	text := strings.ToLower(string(logBody))
-	for _, needle := range []string{"authentication failed", "not logged in", "unauthenticated", "login required", "auth_error"} {
-		if strings.Contains(text, needle) {
+func runnerOrigin(line []byte) bool {
+	var ev struct {
+		Origin string `json:"origin"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(line), &ev) != nil {
+		return false
+	}
+	return ev.Origin == "runner"
+}
+
+func runnerAuthFailed(events []byte) bool {
+	for _, line := range bytesSplit(events) {
+		var ev struct {
+			Origin string `json:"origin"`
+			Type   string `json:"type"`
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if ev.Origin == "runner" && ev.Type == "AuthenticationFailed" {
 			return true
 		}
 	}
@@ -929,7 +1107,10 @@ func decodeTaskDraft(raw []byte) (TaskSnapshot, error) {
 		if blockers := domain.PublishBlockers(draft); len(blockers) > 0 {
 			return TaskSnapshot{}, errors.New(strings.Join(blockers, ","))
 		}
-		return TaskSnapshot{Name: draft.Name, Prompt: draft.Prompt, BaseCommit: draft.Source.BaseRef}, nil
+		return TaskSnapshot{
+			Name: draft.Name, Prompt: draft.Prompt, BaseCommit: draft.Source.BaseRef,
+			SourceDir: draft.Source.Directory, VerifierRoot: draft.Source.VerifierRoot,
+		}, nil
 	}
 	var snap TaskSnapshot
 	if err := domain.UnmarshalStrict(raw, &snap); err != nil {
@@ -1007,6 +1188,84 @@ func bytesSplit(b []byte) [][]byte {
 		out = append(out, b[start:])
 	}
 	return out
+}
+
+func (s *Service) scheduleRepair(ctx context.Context, trialID string) {
+	trial, err := s.Store.GetTrial(ctx, trialID)
+	if err != nil {
+		return
+	}
+	exp, err := s.Store.GetExperiment(ctx, trial.ExperimentID)
+	if err != nil || exp.ProtocolJSON != "repair-once-v1" {
+		return
+	}
+	attempts, err := s.Store.ListAttempts(ctx, trialID)
+	if err != nil || len(attempts) != 1 {
+		return
+	}
+	first := attempts[0]
+	if first.Verdict != string(domain.VerdictFail) || strings.HasPrefix(first.Reason, "protocol_repair") || !domain.ExecutionState(first.State).Terminal() {
+		return
+	}
+	if err := s.Store.PrepareRetry(ctx, trialID); err != nil {
+		return
+	}
+	mark := filepath.Join(s.DataDir, "repairs", trialID)
+	if err := os.MkdirAll(filepath.Dir(mark), 0o755); err != nil {
+		return
+	}
+	if err := os.WriteFile(mark, []byte("protocol_repair\n"), 0o644); err != nil {
+		return
+	}
+	_ = s.Store.InsertIntervention(ctx, first.ID, "protocol_repair", "有界修复协议安排一次修复。这次通过不会回写 single-pass 的首次结论。")
+}
+
+func (s *Service) stampPhases(ctx context.Context, attempt sqlite.Attempt, queueMs, agentMs, verifyMs int64) {
+	current, err := s.Store.GetAttempt(ctx, attempt.ID)
+	base := attempt.RuntimeJSON
+	if err == nil && current.RuntimeJSON != "" {
+		base = current.RuntimeJSON
+	}
+	e2e := queueMs + agentMs + verifyMs
+	_ = s.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(base, map[string]any{
+		"phases": map[string]int64{
+			"queue_ms": queueMs, "prepare_ms": queueMs, "agent_ms": agentMs,
+			"collect_ms": 0, "verify_ms": verifyMs, "cleanup_ms": 0, "end_to_end_ms": e2e,
+		},
+	}))
+}
+
+func (s *Service) saveStagePatch(attempt sqlite.Attempt) {
+	src := filepath.Join(s.DataDir, "attempts", attempt.ID, "patch.json")
+	body, err := os.ReadFile(src)
+	if err != nil {
+		return
+	}
+	stage := "implement"
+	if strings.HasPrefix(attempt.Reason, "protocol_repair") {
+		stage = "repair"
+	}
+	dir := filepath.Join(s.DataDir, "attempts", attempt.ID, "stages", stage)
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "patch.json"), body, 0o644)
+}
+
+func mergeRuntime(base string, extra map[string]any) string {
+	m := map[string]any{}
+	_ = json.Unmarshal([]byte(base), &m)
+	if m == nil {
+		m = map[string]any{}
+	}
+	for key, value := range extra {
+		m[key] = value
+	}
+	body, err := json.Marshal(m)
+	if err != nil {
+		return base
+	}
+	return string(body)
 }
 
 func HashToken(token string) string {

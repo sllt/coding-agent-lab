@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,12 +12,20 @@ import (
 
 	"github.com/sllt/agentlab/internal/agent/fixture"
 	"github.com/sllt/agentlab/internal/domain"
+	"github.com/sllt/agentlab/internal/runner"
 	"github.com/sllt/agentlab/internal/store/sqlite"
 )
 
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "fake-agent" {
 		os.Exit(fixture.Run())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "runner" {
+		if err := runner.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }

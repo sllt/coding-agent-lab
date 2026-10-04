@@ -8,6 +8,7 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 43118,
     strictPort: true,
+    cors: false,
     headers: {
       'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
       'X-Content-Type-Options': 'nosniff',

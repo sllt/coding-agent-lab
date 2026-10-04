@@ -143,29 +143,42 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		_ = emit("runner", "Finished", map[string]any{"exit_code": -1, "error": err.Error(), "agent_started": false})
 		return err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
+	// StdoutPipe is closed by Wait before a concurrent reader is guaranteed to
+	// finish, which drops the last lines. A writer makes Wait copy to completion
+	// before it returns.
+	stdoutR, stdoutW := io.Pipe()
+	stderrR, stderrW := io.Pipe()
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
 		_ = writeJournal(journal, "start_failed", 0)
 		_ = emit("runner", "Finished", map[string]any{"exit_code": -1, "error": err.Error(), "agent_started": false})
 		return nil
 	}
-	if err := writeJournal(journal, "started", cmd.Process.Pid); err != nil {
+	stopChild := func() {
 		_ = killTree(cmd)
+		_ = stdoutR.Close()
+		_ = stderrR.Close()
+		_ = cmd.Wait()
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
+	}
+	if err := writeJournal(journal, "started", cmd.Process.Pid); err != nil {
+		stopChild()
 		return err
 	}
 	startTime, _ := ProcStartTime(cmd.Process.Pid)
 	RememberIdentity(spec.IdentityToken, cmd.Process.Pid, startTime)
+	if err := emit("runner", "IdentityRecorded", map[string]any{"pid": cmd.Process.Pid, "starttime": startTime, "token": spec.IdentityToken}); err != nil {
+		stopChild()
+		return err
+	}
 	logPath := filepathJoin(spec.WorkDir, "agent.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
-		_ = killTree(cmd)
+		stopChild()
 		return err
 	}
 	defer logFile.Close()
@@ -176,15 +189,19 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		limit = 64 << 20
 	}
 	decode := agent.NewLineDecoder()
+	var logMu sync.Mutex
 	consume := func(stream string, r io.Reader) {
 		reader := bufio.NewReaderSize(r, 64*1024)
 		for {
 			line, err := reader.ReadSlice('\n')
 			if errors.Is(err, bufio.ErrBufferFull) {
+				logMu.Lock()
 				truncated = true
+				logMu.Unlock()
 				continue
 			}
 			if len(line) > 0 {
+				logMu.Lock()
 				if int64(len(line)) > maxFrame {
 					truncated = true
 					line = line[:maxFrame]
@@ -196,6 +213,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 					truncated = true
 				}
 				events, decErr := decode.Decode(stream, line)
+				logMu.Unlock()
 				if decErr == nil {
 					for _, ev := range events {
 						if ev.Type == "Finished" || ev.Type == "CleanupCompleted" || ev.Type == "VerifiedPass" {
@@ -212,8 +230,15 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); consume("stdout", stdout) }()
-	go func() { defer wg.Done(); consume("stderr", stderr) }()
+	go func() { defer wg.Done(); consume("stdout", stdoutR) }()
+	go func() { defer wg.Done(); consume("stderr", stderrR) }()
+	// Wait copies into the pipes. Close them only after Wait so the copy can
+	// finish, then wait until both readers have applied every line to the log.
+	finishStreams := func() {
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
+		wg.Wait()
+	}
 	waitErr := make(chan error, 1)
 	go func() { waitErr <- cmd.Wait() }()
 	wall := spec.WallSeconds
@@ -238,7 +263,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		_ = killTree(cmd)
 		exitErr = <-waitErr
 	}
-	wg.Wait()
+	finishStreams()
 	code := 0
 	if exitErr != nil {
 		var ee *exec.ExitError
@@ -263,6 +288,11 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		cleanup = "quarantined"
 	}
 	_ = emit("runner", "CleanupCompleted", map[string]string{"state": cleanup})
+	// AuthenticationFailed is a runner decision from the execution spec the
+	// control plane already froze. Agent stdout is not consulted.
+	if spec.Launch.Env["AGENTLAB_FAKE_MODE"] == "auth" {
+		_ = emit("runner", "AuthenticationFailed", map[string]string{"source": "fixture_mode"})
+	}
 	_ = emit("runner", "Finished", map[string]any{"exit_code": code, "reason": reason, "agent_started": true, "cleanup": cleanup, "truncated": truncated})
 	return nil
 }

@@ -24,6 +24,8 @@ export function Profiles() {
   const [model, setModel] = useState('fixture-local')
   const [executable, setExecutable] = useState('')
   const [approve, setApprove] = useState(false)
+  const [billing, setBilling] = useState<'subscription' | 'metered_api'>('subscription')
+  const [entitled, setEntitled] = useState(false)
   const [report, setReport] = useState('')
   const [error, setError] = useState('')
 
@@ -35,6 +37,7 @@ export function Profiles() {
     if ((a.items || [])[0]) setAccount((current) => current || (a.items || [])[0].ID)
   }
   useEffect(() => { load().catch((err: Error) => setError(err.message)).finally(() => setLoading(false)) }, [])
+  const loadFailed = !loading && error !== '' && accounts.length === 0 && profiles.length === 0
 
   function chooseAdapter(next: string) {
     setAdapter(next)
@@ -56,7 +59,7 @@ export function Profiles() {
       {error ? <Notice tone="warn">{error}</Notice> : null}
       <Card title="账号引用">
         <Button onClick={() => void api.request('POST', '/api/v1/accounts', { auth_kind: 'manual_import', credential_ref: 'ref:local-fixture', concurrency: 1 }).then(load).catch((err: Error) => setError(err.message))}>保存本地假 CLI 引用</Button>
-        {loading ? <p className="mt-2 text-sm">正在读取账号。</p> : accounts.length === 0 ? <p className="mt-2 text-sm">还没有账号引用。</p> : (
+        {loading ? <p className="mt-2 text-sm">正在读取账号。</p> : loadFailed ? null : accounts.length === 0 ? <p className="mt-2 text-sm">还没有账号引用。</p> : (
           <ul className="mt-2 text-sm">{accounts.map((item) => <li key={item.ID}>{item.AuthKind} · {item.CredentialRef}</li>)}</ul>
         )}
       </Card>
@@ -83,6 +86,20 @@ export function Profiles() {
               <Input placeholder="可执行文件，留空则用默认命令名" value={executable} onChange={(e) => setExecutable(e.target.value)} />
             </>
           )}
+          {adapter !== 'fixture' ? (
+            <>
+              <label className="text-sm">计费路径
+                <select className="mt-1 w-full rounded-md border bg-white px-3 py-2" value={billing} onChange={(e) => setBilling(e.target.value === 'metered_api' ? 'metered_api' : 'subscription')}>
+                  <option value="subscription">订阅</option>
+                  <option value="metered_api">按量 API</option>
+                </select>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" checked={entitled} onChange={(e) => setEntitled(e.target.checked)} />
+                <span>我确认这次调用走上面这条计费路径。发布会记下确认时间。页面不保存密钥。</span>
+              </label>
+            </>
+          ) : null}
           {adapter === 'cursor' ? (
             <label className="flex items-start gap-2 text-sm">
               <input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)} />
@@ -101,10 +118,12 @@ export function Profiles() {
               display_name: name,
               executable,
               approve_tools: approve,
+              billing_path: adapter === 'fixture' ? '' : billing,
+              entitlement_verified_at: adapter !== 'fixture' && entitled ? new Date().toISOString() : '',
             },
           }).then(load).catch((err: Error) => setError(err.message))}>创建草稿</Button>
         </div>
-        {loading ? <p className="mt-3 text-sm">正在读取配置。</p> : profiles.length === 0 ? <p className="mt-3 text-sm">还没有配置。</p> : (
+        {loading ? <p className="mt-3 text-sm">正在读取配置。</p> : loadFailed ? null : profiles.length === 0 ? <p className="mt-3 text-sm">还没有配置。</p> : (
           <ul className="mt-3 flex flex-col gap-2 text-sm">
             {profiles.map((profile) => (
               <li key={profile.ID} className="flex flex-wrap gap-2">

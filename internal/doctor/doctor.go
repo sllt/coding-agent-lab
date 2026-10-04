@@ -5,6 +5,7 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,13 +14,13 @@ import (
 )
 
 type Report struct {
-	Adapter      string   `json:"adapter"`
-	Executable   string   `json:"executable"`
-	CLIVersion   string   `json:"cli_version"`
-	ModelID      string   `json:"model_id"`
-	ModelCall    string   `json:"model_call"`
-	Network      string   `json:"network"`
-	Executor     string   `json:"executor"`
+	Adapter          string   `json:"adapter"`
+	Executable       string   `json:"executable"`
+	CLIVersion       string   `json:"cli_version"`
+	ModelID          string   `json:"model_id"`
+	ModelCall        string   `json:"model_call"`
+	Network          string   `json:"network"`
+	Executor         string   `json:"executor"`
 	StaticPassed     bool     `json:"static_passed"`
 	Verified         bool     `json:"verified"`
 	SupportsHeadless bool     `json:"supports_headless"`
@@ -32,6 +33,13 @@ func Static(ctx context.Context, adapterName, executable, modelID string, allowM
 	report := Report{Adapter: adapterName, Executable: executable, ModelID: modelID, ModelCall: "not_run", Network: "unrestricted", Executor: "unconfigured"}
 	if strings.Contains(modelID, "REPLACE_") || strings.Contains(executable, "REPLACE_") {
 		report.Blockers = append(report.Blockers, "placeholder_field")
+	}
+	if f, err := os.CreateTemp("", "agentlab-doctor-*"); err != nil {
+		report.Blockers = append(report.Blockers, "temp_not_writable")
+	} else {
+		name := f.Name()
+		_ = f.Close()
+		_ = os.Remove(name)
 	}
 	ad, ok := agent.ByName(adapterName)
 	if !ok {
