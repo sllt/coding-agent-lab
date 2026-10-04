@@ -36,6 +36,8 @@ type Config struct {
 	Worker func(context.Context) error
 	// ExtraResources are declared after the HTTP listener, for tests.
 	ExtraResources []pi.Resource
+	// Wrap sits outside the Pi router and inside the loopback check.
+	Wrap func(http.Handler) http.Handler
 }
 
 // Runtime is one Pi application plus the host HTTP server.
@@ -95,6 +97,9 @@ func Build(cfg Config) (*Runtime, error) {
 		return nil, err
 	}
 	rt.App = app
+	if cfg.Wrap != nil {
+		handler = cfg.Wrap(handler)
+	}
 	rt.Handler = secure(cfg.Addr, handler, rt.requests)
 	worker := cfg.Worker
 	app.Go("scheduler", func(c *pi.Context) error {

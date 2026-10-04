@@ -144,7 +144,7 @@ func TestAccountCapacityIsSharedUntilCleanup(t *testing.T) {
 	if _, err := s.CreateAttempt(ctx, ids[0], account.ID, `{}`, "", 2, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateAttempt(ctx, ids[1], account.ID, `{}`, "", 2, 1); err != ErrConflict {
+	if _, err := s.CreateAttempt(ctx, ids[1], account.ID, `{}`, "", 2, 1); err != ErrCapacity {
 		t.Fatalf("same account second profile err=%v", err)
 	}
 	n, err := s.ActiveAttempts(ctx, account.ID)

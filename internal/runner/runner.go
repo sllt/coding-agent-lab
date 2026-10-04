@@ -97,7 +97,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 	journal := filepathJoin(spec.WorkDir, "journal.json")
-	if err := writeJournal(journal, "armed"); err != nil {
+	if err := writeJournal(journal, "armed", 0); err != nil {
 		return err
 	}
 	if err := emit("runner", "PhaseChanged", map[string]string{"phase": "preparing"}); err != nil {
@@ -132,7 +132,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	if err := emit("runner", "PhaseChanged", map[string]string{"phase": "running"}); err != nil {
 		return err
 	}
-	if err := writeJournal(journal, "started"); err != nil {
+	if err := writeJournal(journal, "started", 0); err != nil {
 		return err
 	}
 	cmd, err := command(spec)
@@ -149,9 +149,13 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 	if err := cmd.Start(); err != nil {
-		_ = writeJournal(journal, "start_failed")
+		_ = writeJournal(journal, "start_failed", 0)
 		_ = emit("runner", "Finished", map[string]any{"exit_code": -1, "error": err.Error(), "agent_started": false})
 		return nil
+	}
+	if err := writeJournal(journal, "started", cmd.Process.Pid); err != nil {
+		_ = killTree(cmd)
+		return err
 	}
 	logPath := filepathJoin(spec.WorkDir, "agent.log")
 	logFile, err := os.Create(logPath)
@@ -282,7 +286,7 @@ func sanitizedEnv(extra map[string]string) []string {
 	}
 	for k, v := range extra {
 		switch k {
-		case "PATH", "LANG", "LC_ALL", "TZ", "HOME", "TMPDIR", "AGENTLAB_FAKE_MODE":
+		case "PATH", "LANG", "LC_ALL", "TZ", "HOME", "TMPDIR", "AGENTLAB_FAKE_MODE", "AGENTLAB_SOLUTION_DIR":
 			out = append(out, k+"="+v)
 		}
 	}
@@ -312,7 +316,7 @@ func processGroupGone(cmd *exec.Cmd) bool {
 	return syscall.Kill(-cmd.Process.Pid, 0) != nil
 }
 
-func writeJournal(path, state string) error {
+func writeJournal(path, state string, pid int) error {
 	if err := os.MkdirAll(filepathDir(path), 0o755); err != nil {
 		return err
 	}
@@ -321,7 +325,7 @@ func writeJournal(path, state string) error {
 		return err
 	}
 	defer f.Close()
-	if _, err := fmt.Fprintf(f, "{\"agent_start\":%q}\n", state); err != nil {
+	if _, err := fmt.Fprintf(f, "{\"agent_start\":%q,\"pid\":%d}\n", state, pid); err != nil {
 		return err
 	}
 	return f.Sync()

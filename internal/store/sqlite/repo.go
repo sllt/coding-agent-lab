@@ -13,6 +13,7 @@ import (
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrIdempotent = errors.New("idempotency conflict")
+	ErrCapacity   = errors.New("capacity")
 )
 
 type Project struct {
@@ -384,7 +385,7 @@ func (s *Store) CreateAttempt(ctx context.Context, trialID, accountID, runtimeJS
 			accountLimit = accountCap
 		}
 		if globalN >= globalLimit || accountN >= accountLimit {
-			return ErrConflict
+			return ErrCapacity
 		}
 		var number int
 		var fence int64

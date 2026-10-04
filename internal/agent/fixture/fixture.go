@@ -4,8 +4,10 @@ package fixture
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -57,6 +59,42 @@ func Run() int {
 		}
 		_, _ = os.Stdout.Write(buf)
 		_, _ = os.Stdout.Write([]byte("\n"))
+		return 0
+	case "copy":
+		src := os.Getenv("AGENTLAB_SOLUTION_DIR")
+		if src == "" {
+			fmt.Fprintln(os.Stderr, "missing solution dir")
+			return 1
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || entry.Name() == "hidden" {
+				continue
+			}
+			in, err := os.Open(filepath.Join(src, entry.Name()))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			out, err := os.Create(entry.Name())
+			if err != nil {
+				_ = in.Close()
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			_, err = io.Copy(out, in)
+			_ = in.Close()
+			_ = out.Close()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		fmt.Println("copied solution files")
 		return 0
 	default:
 		fmt.Fprintln(os.Stderr, "unknown fake mode")
