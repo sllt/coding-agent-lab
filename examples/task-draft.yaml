@@ -1,0 +1,38 @@
+# TaskDraft 示例；仅是设计草稿，不是已实现软件的可执行配置。
+# 引用的项目、环境、verifier 必须先登记；发布时解析固定提交和摘要。
+schema_version: agentlab.task/v1alpha1
+kind: TaskDraft
+name: 修复订单列表游标分页
+project_ref: demo-orders-api
+source:
+  base_ref: master
+  history_policy: baseline_only
+environment_ref: demo-go-api-linux-amd64
+prompt: |
+  修复订单列表的游标分页行为。
+  订单按 created_at 倒序，时间相同时按 id 倒序。
+  翻页不得重复或遗漏时间相同的记录。
+  非法游标返回明确的 400 响应，默认分页大小为 20，上限为 100。
+  保持现有公开接口兼容，补充覆盖边界情况的测试。
+  不修改验证器、认证逻辑或部署配置；不推送和合并代码。
+change_policy:
+  allowed_paths:
+    - internal/orders/**
+    - tests/orders/**
+  forbid_special_files: true
+  forbid_symlinks: true
+verifier_ref: demo-orders-pagination-v1
+baseline_expectations:
+  regression: pass
+  pagination_acceptance: fail
+candidate_expectations:
+  regression: pass
+  pagination_acceptance: pass
+limits:
+  agent_wall_seconds: 1800
+  prepare_wall_seconds: 600
+  verify_wall_seconds: 600
+  log_bytes: 67108864
+  artifact_bytes: 536870912
+  max_files: 10000
+protocol: single-pass-v1
