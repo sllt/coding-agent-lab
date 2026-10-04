@@ -1,0 +1,27 @@
+# 面向 v0.2 的三个 Agent 配置对比示例。
+# v0.1 只选择一个 Profile，global_concurrency 设为 1。
+# 以下版本 ID 是示例引用；未在数据库登记时必须拒绝执行。
+schema_version: agentlab.experiment/v1alpha1
+kind: ExperimentDraft
+name: 订单分页三种 Agent 配置对比
+mode: agent_profile
+task_version_ids:
+  - demo-task-pagination-v1
+profile_version_ids:
+  - demo-profile-cursor-v1
+  - demo-profile-grok-v1
+  - demo-profile-opencode-v1
+repetitions: 1
+protocol: single-pass-v1
+scheduler:
+  global_concurrency: 2
+  per_account_concurrency: 1
+  max_auto_infra_retries: 0
+budget:
+  max_agent_starts: 3
+  observed_cost_limit_microusd: null
+  cost_enforcement: informational
+intervention_policy: disallow
+export_policy:
+  include_credentials: false
+  include_reference_solution: false

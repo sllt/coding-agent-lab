@@ -1,0 +1,13 @@
+/agentlab
+/bin/
+/dist/
+.agentlab/
+data/
+*.db
+*.db-wal
+*.db-shm
+web/node_modules/
+web/dist/
+coverage/
+*.out
+.DS_Store

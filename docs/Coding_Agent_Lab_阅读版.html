@@ -1,0 +1,1817 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Coding Agent Lab · 产品与技术设计</title><style>
+:root{--ink:#18272f;--muted:#61717b;--line:#dce4e8;--brand:#146658;--paper:#fff;--bg:#f4f7f7;--code:#edf2f4}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.82}
+a{color:var(--brand);text-decoration:none}a:hover{text-decoration:underline}p{margin:12px 0 17px}strong{font-weight:700}
+.hero{padding:46px max(24px,calc((100vw - 1340px)/2));background:#132f32;color:#fff;border-bottom:5px solid #4da58d}
+.eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#add4cb;font-weight:700}.hero h1{font-size:40px;line-height:1.15;letter-spacing:-1.2px;margin:12px 0}.hero p{max-width:800px;margin:12px 0;color:#d5e3e4}.meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.tag{font-size:12px;border:1px solid #456568;padding:4px 11px;border-radius:4px;color:#e4efeb}
+.layout{max-width:1390px;margin:0 auto;display:grid;grid-template-columns:250px minmax(0,1fr);gap:32px;padding:30px 24px 80px}.sidebar{align-self:start;position:sticky;top:24px;max-height:calc(100vh - 48px);overflow:auto;padding:6px 16px 20px 0}.sidebar-title{font-weight:750;font-size:12px;color:var(--muted);letter-spacing:.1em;margin-bottom:14px}.sidebar details{border-top:1px solid var(--line);padding:12px 0}.sidebar summary{font-weight:700;cursor:pointer}.subnav{display:grid;gap:8px;margin:12px 0 0 12px}.subnav a{font-size:12.5px;line-height:1.55;color:var(--muted)}main{min-width:0}.document{padding:36px 42px;background:var(--paper);border:1px solid var(--line);border-radius:6px;margin-bottom:28px;box-shadow:0 4px 20px #17323305}
+.document>h1{font-size:29px;line-height:1.4;margin:0 0 18px;letter-spacing:-.5px}.document h2{font-size:22px;line-height:1.45;margin:42px 0 18px;padding-top:10px;border-top:1px solid var(--line)}.document h3{font-size:17px;line-height:1.55;margin:25px 0 11px}.document h4{font-size:15px;margin:22px 0 9px}blockquote{margin:18px 0;padding:12px 18px;background:#eef6f3;border-left:4px solid #4d9f87;color:#37564f}blockquote p:last-child{margin-bottom:0}blockquote p:first-child{margin-top:0}ul,ol{padding-left:24px}li{margin-bottom:7px}code{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.87em;background:var(--code);padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}pre{background:#edf2f4;border:1px solid #dce4e8;border-radius:5px;padding:17px 19px;overflow:auto;line-height:1.62;font-size:13px}pre code{font-size:inherit;background:none;padding:0;overflow-wrap:normal;white-space:pre}.table-wrap{overflow-x:auto;margin:18px 0 24px;border:1px solid var(--line);border-radius:4px}table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.65}th{background:#edf4f2;color:#244f47;text-align:left;white-space:normal}th,td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top;min-width:95px}tr:last-child td{border-bottom:0}td a,li a{overflow-wrap:anywhere}.foot{font-size:12px;color:var(--muted);text-align:center;padding:18px}.backtop{display:block;padding:14px 0;font-size:12px}
+@media(max-width:1000px){.layout{grid-template-columns:205px minmax(0,1fr);gap:20px}.document{padding:28px}.hero h1{font-size:34px}}
+@media(max-width:740px){.hero{padding:30px 20px}.hero h1{font-size:29px}.layout{display:block;padding:18px 12px 45px}.sidebar{position:static;max-height:none;padding:10px 14px 20px}.sidebar .subnav{max-height:260px;overflow:auto}.document{padding:22px 18px}.document>h1{font-size:24px}.document h2{font-size:20px}.document h3{font-size:16px}.table-wrap{margin-left:0;margin-right:0}th,td{min-width:120px}.sidebar details:not([open]){padding:8px 0}.meta{gap:7px}.tag{font-size:11px}}
+@media print{body{background:#fff;font-size:10pt}.hero{background:#fff;color:#17272b;border-bottom:2px solid #777;padding:0 0 20px}.hero p,.eyebrow{color:#333}.tag{color:#333;border-color:#bbb}.sidebar{display:none}.layout{display:block;padding:20px 0}.document{border:0;box-shadow:none;padding:0;break-before:page}.table-wrap,pre{overflow:visible}pre code{white-space:pre-wrap}h1,h2,h3{break-after:avoid}.foot{display:none}}
+</style></head><body>
+<header id="top" class="hero"><div class="eyebrow">Product & Architecture · Design baseline</div><h1>Coding Agent Lab</h1><p>把真实开发任务、Agent 执行条件和独立验收证据放在一起。先完成可信的单次闭环，再比较配置，最后研究工作流。</p><div class="meta"><span class="tag">设计版本 1.0 · 2026-10-04</span><span class="tag">建议：Go + Pi / Go Runner</span><span class="tag">自托管 · 单用户优先</span><span class="tag">设计文档，非已实现产品</span></div></header>
+<div class="layout"><aside class="sidebar"><div class="sidebar-title">阅读导航</div><details open><summary><a href="#doc-prd">产品需求</a></summary><div class="subnav"><a href="#prd-h2">1. 产品决策摘要</a><a href="#prd-h3">2. 为什么值得做，以及什么情况不值得做</a><a href="#prd-h6">3. 用户、场景与产品边界</a><a href="#prd-h10">4. 核心概念与命名</a><a href="#prd-h11">5. 从打开产品到取得结果</a><a href="#prd-h16">6. 功能需求与版本边界</a><a href="#prd-h19">7. 任务系统：让复杂度落在可验证的地方</a><a href="#prd-h23">8. 验收、统计与解释方式</a><a href="#prd-h28">9. 界面与交互设计</a><a href="#prd-h33">10. 隔离、权限和隐私的产品承诺</a><a href="#prd-h34">11. 非功能需求与容量目标</a><a href="#prd-h35">12. 版本路线与进入下一阶段的条件</a><a href="#prd-h43">13. 产品验收与停止线</a><a href="#prd-h44">14. 产品决策与资料依据</a></div></details><details ><summary><a href="#doc-design">技术设计</a></summary><div class="subnav"><a href="#design-h2">1. 总体技术决策</a><a href="#design-h3">2. Pi 与 Pipi：基于实际源码的选型</a><a href="#design-h9">3. 系统结构与部署</a><a href="#design-h13">4. 领域模型、不可变版本与可比性</a><a href="#design-h18">5. Task 与验证协议</a><a href="#design-h23">6. 存储模型与事务</a><a href="#design-h28">7. 调度、状态机、取消和恢复</a><a href="#design-h36">8. Workspace、Sandbox 与安全边界</a><a href="#design-h43">9. Agent Adapter 合约与三个首选入口</a><a href="#design-h50">10. 事件、SSE、制品与背压</a><a href="#design-h55">11. 验证引擎与证据质量</a><a href="#design-h60">12. 预算、账号容量与使用量</a><a href="#design-h65">13. 统计口径与可比性</a><a href="#design-h70">14. HTTP API、认证与前后端契约</a><a href="#design-h76">15. 前端设计与实现约束</a><a href="#design-h77">16. 测试计划与发布门槛</a><a href="#design-h81">17. 运维、备份、保留与观测</a><a href="#design-h82">18. 实施顺序、ADR 与未决验证</a><a href="#design-h87">19. 资料、证据与查阅限制</a><a href="#design-h90">20. 开发交付检查清单</a></div></details><details ><summary><a href="#doc-tasks">实施任务包</a></summary><div class="subnav"><a href="#tasks-h2">1. 执行规则</a><a href="#tasks-h3">2. v0.0：先验证四个真实前提</a><a href="#tasks-h4">3. v0.1：单次可信闭环</a><a href="#tasks-h15">4. v0.2：可并行但不同时改核心协议</a><a href="#tasks-h16">5. v0.3 以后的工单</a><a href="#tasks-h17">6. 工单提交模板</a><a href="#tasks-h18">7. 给主开发 Agent 的启动提示词</a></div></details><details ><summary><a href="#doc-examples">配置草稿</a></summary><div class="subnav"><a href="#examples-yaml">查看 YAML</a></div></details><a class="backtop" href="#top">回到顶部 ↑</a></aside><main><article id="doc-prd" class="document"><h1 id="prd-h1">Coding Agent Lab · 产品需求文档</h1>
+<p><strong>文档版本：1.0 · 设计基线：2026-10-04 · 产品暂名：Coding Agent Lab / agentlab</strong><br/>
+<strong>定位：面向个人开发者与小团队的、自托管 Coding Agent 实验与验收工作台。</strong><br/>
+配套文档：<a href="02-%E6%8A%80%E6%9C%AF%E8%AE%BE%E8%AE%A1%E6%96%87%E6%A1%A3.md">技术设计文档</a> · <a href="03-%E5%AE%9E%E6%96%BD%E4%BB%BB%E5%8A%A1%E5%8C%85.md">实施任务包</a></p>
+<blockquote>
+<p>本文定义建议实现的产品，不表示软件已经实现。版本号 v0.x 指产品路线，而非本文版本。上一次讨论中的模型分数、工时和“AI 可完成比例”只是概念示意，不是本产品的实测数据，也不作为立项依据。</p>
+</blockquote>
+<h2 id="prd-h2">1. 产品决策摘要</h2>
+<p>做一个让你能够把<strong>同一真实开发任务交给不同 Agent 配置，在独立工作区执行，并用可信的验收证据决定哪个结果值得采用</strong>的 Web 工作台。</p>
+<p>它首先回答四个问题：这次是否真正做成；失败在哪一层；用了多少时间、人工介入和可观测额度；在相似任务上哪种配置更值得再次使用。它不从一开始回答“世界上哪个模型最强”。</p>
+<p><strong>技术方向：Go + sllt/pi，Runner 同样先用 Go；React + TypeScript 前端；SQLite 元数据与本地制品目录。</strong> 首版一个控制服务、一个本机执行器，不引入消息中间件、分布式工作流或另一个 Agent 推理循环。选型证据与约束见技术文档第 2 章。</p>
+<p><strong>交付顺序：先证明账号和执行链路可用，再做单次闭环，再做多 Agent 对比，最后才做统计与工作流实验。</strong> 不应先花大量额度建设漂亮排行榜。</p>
+<h2 id="prd-h3">2. 为什么值得做，以及什么情况不值得做</h2>
+<h3 id="prd-h4">2.1 实际问题</h3>
+<p>你已经拥有多种编码工具和额度，但目前判断容易依赖最近一次印象：某次页面写得好，不代表它在修改已有系统时更可靠；一次编译通过，也不能说明权限、异常处理和回归测试都正确。另一方面，手工复制仓库、传递任务、保存日志、运行测试和对比补丁，会吞掉本应节省的精力。</p>
+<p>因此，产品价值不是“多开几个终端”，而是把<strong>任务定义、执行条件、实际改动和验收结果</strong>关联起来，并保留下次可以复核的证据。</p>
+<h3 id="prd-h5">2.2 成功与失败标准</h3>
+<p>成功的表现是：你确实会在真实项目中反复使用它，能够找回某次实验的完整上下文，能区分 Agent 不会做与平台没跑起来，并减少手工组织实验、反复问模型“你真的测试了吗”的时间。</p>
+<p>以下情况应停止扩张范围，而不是继续补花哨功能：现有套餐在合法调用方式下无法进入自动化链路；制作验收任务的人工成本长期超过收益；只能产出主观评分、没有可用补丁与测试证据；为了维护几十个适配器而无法稳定支持自己正在使用的三个入口。</p>
+<p>这里没有预设商业收入或开发效率提升百分比。先验证个人工作台的实际价值，再判断是否做商业产品。</p>
+<h2 id="prd-h6">3. 用户、场景与产品边界</h2>
+<h3 id="prd-h7">3.1 首要用户</h3>
+<p>第一用户是产品作者自己：拥有若干真实代码仓库，能定义验收条件，会使用 CLI，希望比较工具组合并保存有效产出。v1.0 仍允许是一个优秀的单用户产品，不以多租户 SaaS 为目标。</p>
+<p>后续用户可以是小团队的技术负责人，但团队成员、组织权限、计费、共享账号和公共榜单均不构成首版需求。</p>
+<h3 id="prd-h8">3.2 三类实验，不能混为一谈</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>实验类型</th>
+<th>比较对象</th>
+<th>保持不变的主要条件</th>
+<th>可以得出的结论</th>
+<th>首次版本</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent 配置对比</td>
+<td>CLI、模型、规则、工具和权限组成的配置</td>
+<td>任务、基线、验收协议与资源预算</td>
+<td>哪套工具配置更适合这些任务</td>
+<td>v0.2</td>
+</tr>
+<tr>
+<td>受控模型对比</td>
+<td>同一开放 Agent 内的不同模型</td>
+<td>Agent 版本、工具、提示词、可控参数、环境</td>
+<td>在这一固定运行方式下的模型差异</td>
+<td>v0.3</td>
+</tr>
+<tr>
+<td>工作流对比</td>
+<td>单次实现、实现后 Review、Review 后修复</td>
+<td>任务与总预算，明确各阶段差异</td>
+<td>某个流程是否值得增加成本</td>
+<td>v0.4</td>
+</tr>
+</tbody>
+</table></div>
+<p>原生 Agent 中不可见的系统提示词、服务端路由和模型别名可能无法冻结。平台应记录“可控部分的快照”和“不可观测部分”，不能称为严格的纯模型实验。</p>
+<p>手工在 IDE 中完成再导入的结果属于 <strong>manual/imported</strong>，保留其价值，但不与无人干预的自动执行默认合榜。中途指导、修改文件、追加任务都必须形成干预事件，不能事后伪装成首轮独立完成。</p>
+<h3 id="prd-h9">3.3 明确不做</h3>
+<p>首版不做 Agent 推理引擎、模型 API 中转站、IDE、通用 DAG 编辑器、自动模型路由、自主无限重试、多人共享订阅、自动合并代码、生产部署或不可信公共代码的托管执行平台。</p>
+<p>Herdr、OMP 或其他会话工具可以继续独立使用。Lab 管理的是实验与验收事实，不接管所有日常终端会话，也不要求把既有工作流全部迁进来。</p>
+<h2 id="prd-h10">4. 核心概念与命名</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>概念</th>
+<th>产品含义</th>
+<th>关键规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Project</td>
+<td>一个被授权使用的代码项目</td>
+<td>保存来源和工作区策略，不等于修改原仓库</td>
+</tr>
+<tr>
+<td>Task</td>
+<td>一个可持续编辑的任务</td>
+<td>是任务目录中的逻辑身份</td>
+</tr>
+<tr>
+<td>TaskVersion</td>
+<td>已发布的任务版本</td>
+<td>提示词、基线、验收、预算冻结后不可变</td>
+</tr>
+<tr>
+<td>AgentProfileVersion</td>
+<td>一套可执行 Agent 配置的版本</td>
+<td>CLI、模型请求值、实际报告值、规则和权限均有来源</td>
+</tr>
+<tr>
+<td>EnvironmentVersion</td>
+<td>工具链与运行环境版本</td>
+<td>镜像、平台、依赖锁、网络策略与缓存策略可追踪</td>
+</tr>
+<tr>
+<td>Experiment</td>
+<td>一次已冻结的实验计划</td>
+<td>TaskVersion × ProfileVersion × 重复次数</td>
+</tr>
+<tr>
+<td>Trial</td>
+<td>一个计划中的评测样本</td>
+<td>例如任务 A、配置 B、第 2 次独立运行</td>
+</tr>
+<tr>
+<td>Attempt</td>
+<td>Trial 的一次物理执行</td>
+<td>基础设施恢复产生新 Attempt；不是“偷偷再试一次”</td>
+</tr>
+<tr>
+<td>Evidence</td>
+<td>验收与过程证据</td>
+<td>改动、测试、日志、环境、使用量与人工记录</td>
+</tr>
+<tr>
+<td>Verdict</td>
+<td>验收结论</td>
+<td>pass / fail / inconclusive / unverified</td>
+</tr>
+</tbody>
+</table></div>
+<p>Trial 与 Attempt 分开，是为了避免把“第 3 次才成功”显示成“一次成功”。运行状态、验收结论和清理状态也必须分开：任务功能通过，不等于后台进程已经清理完毕。</p>
+<h2 id="prd-h11">5. 从打开产品到取得结果</h2>
+<h3 id="prd-h12">5.1 第一次使用</h3>
+<p>用户启动本机服务，创建管理员身份，进入 Setup。选择已经安装并合法认证的 Agent；平台执行 <code>doctor</code> 检查可执行文件、版本、账号状态、指定模型、可写工作区、结构化输出、取消能力与环境隔离。</p>
+<p>接下来用一个可丢弃的小任务验证实际链路：创建文件、运行明确的测试、保存补丁、清理进程。用户检查该调用究竟走原有订阅还是单独 API 计费，再确认允许后续执行。<code>doctor</code> 本身不会绕过登录或获取隐藏额度。</p>
+<p>只有通过这一步的 Profile 才可以加入自动实验。没有支持的认证方式时，应显示“当前执行环境不可用”，不能暗中切换到付费 API，也不能要求用户把整个个人主目录挂载给 Agent。</p>
+<h3 id="prd-h13">5.2 完整的一次任务</h3>
+<p>导入一个项目，选择基线，编写任务和公开验收要求；准备由用户控制的验证脚本。平台先检查基线是否满足该任务类型的预期：原有回归测试通过，而针对缺失功能的新测试按预期失败。</p>
+<p>用户发布 TaskVersion，选择一个已验证 Profile，确认预算并执行。执行器使用独立代码副本，原仓库不被修改。界面展示阶段、原始事件、运行耗时与权限提示。Agent 退出后，平台收集真实工作树改动，在新的验证环境中重新运行验收。</p>
+<p>最后展示“哪些必须项通过、哪些失败、是否缺证据”，并提供补丁和报告。采纳补丁是用户的明确操作；Lab 不自动推送、创建带执行副作用的 PR 流程或合并主分支。</p>
+<h3 id="prd-h14">5.3 对比同一任务</h3>
+<p>用户选择两个或三个 Profile，看到预估运行次数与预算上限，再提交 Experiment。所有 Trial 从同一个任务快照开始；不继承另一个 Agent 的上下文、修复补丁或隐藏测试反馈。</p>
+<p>比较页面按验收结论、耗时分解、费用可观测性和人工介入显示。点击任何数字都能回到对应证据。用户可以仅采纳一个结果，不需要给所有模型打统一总分。</p>
+<h3 id="prd-h15">5.4 额度不足、取消和断线</h3>
+<p>遇到认证失效或额度不足时，暂停对应账号的后续调度；其他账号可继续。已执行的部分保留，不记为模型不会编程。用户主动取消后，界面先显示“正在停止”，直到执行器确认进程树已结束；取消不意味着已经发生的服务端计费会撤销。</p>
+<p>关闭网页不会取消任务。控制服务重启后先核对现有执行器，不能发现心跳丢失就立即再启动一份付费调用。</p>
+<h2 id="prd-h16">6. 功能需求与版本边界</h2>
+<p>下表中的 P0 是进入相应版本的验收门槛，不代表全部都要在 v0.1 实现。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>需求</th>
+<th>首次版本</th>
+<th>可验收的完成条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-01</td>
+<td>项目导入与基线冻结</td>
+<td>v0.1</td>
+<td>分支解析为固定提交；源仓库不变；不执行仓库自带安装脚本</td>
+</tr>
+<tr>
+<td>FR-02</td>
+<td>Task 草稿、发布、版本</td>
+<td>v0.1</td>
+<td>发布后不可原地改提示词、基线或检查项；更改生成新版本</td>
+</tr>
+<tr>
+<td>FR-03</td>
+<td>独立验证和基线预检</td>
+<td>v0.1</td>
+<td>无测试、空测试或基线不符均不能产生 pass</td>
+</tr>
+<tr>
+<td>FR-04</td>
+<td>Profile 与 doctor</td>
+<td>v0.0</td>
+<td>记录真实 CLI 版本；认证失败、模型不可用、输出不符时阻止执行</td>
+</tr>
+<tr>
+<td>FR-05</td>
+<td>单 Trial 执行与产物</td>
+<td>v0.1</td>
+<td>一种真实 CLI 完成改动、验收、导出；非仅模拟 UI</td>
+</tr>
+<tr>
+<td>FR-06</td>
+<td>执行队列与账号并发</td>
+<td>v0.2</td>
+<td>同账号默认只跑一个；重复提交不产生重复 Trial</td>
+</tr>
+<tr>
+<td>FR-07</td>
+<td>状态、日志、断线重连</td>
+<td>v0.1</td>
+<td>刷新网页能重放已保留事件；有上限且无无限内存增长</td>
+</tr>
+<tr>
+<td>FR-08</td>
+<td>取消与重启恢复</td>
+<td>v0.1</td>
+<td>子进程被清理；失联不盲目重跑；旧结果不可覆盖新 Attempt</td>
+</tr>
+<tr>
+<td>FR-09</td>
+<td>差异、测试与制品详情</td>
+<td>v0.1</td>
+<td>新增、删除、二进制与未跟踪文件有明确收集或拒绝规则</td>
+</tr>
+<tr>
+<td>FR-10</td>
+<td>实验矩阵与基础对比</td>
+<td>v0.2</td>
+<td>展开为不可变 Trial 列表；所有结果可追踪到同一计划</td>
+</tr>
+<tr>
+<td>FR-11</td>
+<td>使用量与预算</td>
+<td>v0.1</td>
+<td>区分已报告、估算和未知；无数据不显示 0 元</td>
+</tr>
+<tr>
+<td>FR-12</td>
+<td>可比性与重复实验</td>
+<td>v0.3</td>
+<td>不兼容环境不默认合榜；重复次数不是独立任务数量</td>
+</tr>
+<tr>
+<td>FR-13</td>
+<td>人工与盲评 Review</td>
+<td>v0.4</td>
+<td>评价与硬验收分开；人工变更和修复新增流程记录</td>
+</tr>
+<tr>
+<td>FR-14</td>
+<td>导出与保留策略</td>
+<td>v0.1</td>
+<td>导出能离线解释结果；删除前说明哪些证据将不可恢复</td>
+</tr>
+<tr>
+<td>FR-15</td>
+<td>本地安全与审计</td>
+<td>v0.1</td>
+<td>登录、Origin/Host 检查、命令参数校验、危险操作留痕</td>
+</tr>
+<tr>
+<td>FR-16</td>
+<td>三个优先适配入口</td>
+<td>v0.2</td>
+<td>Cursor、Grok Build、OpenCode 分别有固定版本契约测试</td>
+</tr>
+<tr>
+<td>FR-17</td>
+<td>受控模型实验</td>
+<td>v0.3</td>
+<td>同一 OpenCode 版本和工具集；模型 ID 有来源，别名变化可见</td>
+</tr>
+<tr>
+<td>FR-18</td>
+<td>有界实现—Review—修复</td>
+<td>v0.4</td>
+<td>最多一轮修复起步；与 single-pass 分开统计</td>
+</tr>
+<tr>
+<td>FR-19</td>
+<td>Harbor 格式互操作</td>
+<td>v0.5</td>
+<td>可导入/导出指定子集，标注不支持字段，不冒充完整兼容</td>
+</tr>
+<tr>
+<td>FR-20</td>
+<td>外部触发与结果通知</td>
+<td>v0.5</td>
+<td>签名、去重、失败重试和明确授权；不附带自动合并</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="prd-h17">6.1 第一批必须真正支持的 Agent</h3>
+<p>Cursor 官方 CLI、Grok Build 官方 CLI，以及一个开放 Agent 入口 OpenCode。DeepSeek 作为 OpenCode 的模型配置，而不是另做一个“DeepSeek Agent”。这能保持第一批只有三套适配器。</p>
+<p>官方文档提供了这些工具的非交互入口：Cursor 的输出格式是 <code>stream-json</code>，Grok Build 是 <code>streaming-json</code>，OpenCode 非交互运行可输出 JSON 事件。它们不是同一个协议，必须分别适配。[W1][W3][W5]</p>
+<p>“DeepSeek V4.1 Flash”在本文中是用户使用的显示名称。最终 API model ID、账号可用性、推理参数与计费方式必须由本地配置和真实小调用确认，本文不编造对应 ID。</p>
+<h3 id="prd-h18">6.2 订阅与 API 的产品表达</h3>
+<p>Profile 的授权来源至少区分 <code>official_login</code>、<code>api_key</code>、<code>manual_import</code>；计费来源区分 <code>subscription</code>、<code>metered_api</code>、<code>unknown</code>。两者是不同字段。</p>
+<p>Cursor 文档支持官方登录与脚本认证；Grok 文档也描述本地认证和 API key 路径。这说明存在接入方式，不证明某个具体套餐在每个模型、模式和环境中都可共享额度。[W2][W4]</p>
+<p>因此 Settings 要显示“该路径的权益已由用户确认于何时”，而不是显示未经验证的“剩余 80%”。无官方可用量接口时，只记录本平台可观测调用、用户手工备注和限流事件。不抓取私有账单接口，不绕过限制，不共享他人账号。</p>
+<h2 id="prd-h19">7. 任务系统：让复杂度落在可验证的地方</h2>
+<h3 id="prd-h20">7.1 任务类型</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>类型</th>
+<th>例子</th>
+<th>验收重点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>修复既有缺陷</td>
+<td>某个边界输入使分页重复</td>
+<td>复现测试 fail→pass，旧用例 pass→pass</td>
+</tr>
+<tr>
+<td>增量功能</td>
+<td>给现有页面和 API 增加过滤能力</td>
+<td>接口行为、权限、数据一致性与 UI 链路</td>
+</tr>
+<tr>
+<td>有约束重构</td>
+<td>拆分模块但保留兼容行为</td>
+<td>行为回归、公开接口、依赖方向</td>
+</tr>
+<tr>
+<td>全栈交付</td>
+<td>在现有应用补一个完整管理功能</td>
+<td>API、数据库迁移、页面、端到端流程</td>
+</tr>
+<tr>
+<td>诊断与修补</td>
+<td>根据日志定位资源泄露</td>
+<td>可复现症状、修复验证、解释与证据一致</td>
+</tr>
+</tbody>
+</table></div>
+<p>这不是要求所有类型在 v0.1 都有内置模板。首版只需一个通用任务格式和两种示范任务：缺陷修复、增量功能。</p>
+<h3 id="prd-h21">7.2 好任务的内容</h3>
+<p>任务需要公开说明输入、预期行为、限制和交付范围；隐藏的是具体测试实现，而不是偷偷增加没有告知的业务要求。对“更优雅”“像某产品一样好看”等需求，应给可讨论的 rubric 或示例，不把主观审美伪装为自动验收。</p>
+<p>对已有项目，必须冻结一个确实可运行的基线。任务的参考解或已合并修复不能存在于 Agent 可访问的未来提交、solution 文件夹或缓存里。尚未形成独立验收的任务只能标记为 exploratory，不能进入硬通过率统计。</p>
+<h3 id="prd-h22">7.3 首批任务集建议</h3>
+<p>先从你实际愿意采纳的工作中挑 6—10 个任务，分布在至少两个项目；这是建设规模建议，不是统计样本量承诺。可以来自 Go 服务、Rust 服务、Web 页面，避免全是“从零写一个漂亮 Todo”。</p>
+<p>首次每个任务只跑一个 Profile，先验证验收器本身。验证稳定后，再扩为三个 Profile；重复实验安排在 v0.3。不要一开始跑 100 个未经审核的自动生成任务。</p>
+<p>模型可以协助编写测试，但用户要批准验收规则。至少保留基线失败、已知正确补丁通过、明显错误补丁失败这三类校准材料。参考补丁保存在验证端，绝不发送给做题 Agent。</p>
+<h2 id="prd-h23">8. 验收、统计与解释方式</h2>
+<h3 id="prd-h24">8.1 首版只信硬门槛与证据</h3>
+<p><code>pass</code> 表示所有已定义的必须验收项通过且证据完整，不表示证明了程序所有性质。<code>fail</code> 表示执行已经提供足以判断任务未达标的证据；<code>inconclusive</code> 表示基础设施、认证、配额或缺失证据阻止判断；<code>unverified</code> 用于尚未验收或仅导入结果。</p>
+<p>编译失败、约束内未完成、确定的业务测试失败可以判 fail；镜像拉取失败、账号登录失效不能判模型能力失败。Agent 声称“全部测试通过”只能作为原始文本，不能改变 Verdict。</p>
+<h3 id="prd-h25">8.2 比较页默认指标</h3>
+<p>优先展示通过/失败/未判定的原始计数、任务数、重复数、人工介入、端到端时间和 Agent 执行时间。费用有完整数据时才比较金额；套餐调用可展示耗用事件、可得 token 与用户成本备注，但不把它们强制换算为 API 美元。</p>
+<p>不默认提供 0—100 综合分、按代码行数奖励、基于不同测试总数的横向“测试通过率冠军”，或忽略基础设施失败的单一排行榜。必须同时展示可评判样本通过率和整个计划的交付情况，防止通过排除失败样本美化结果。</p>
+<h3 id="prd-h26">8.3 重复实验和结论强度</h3>
+<p>一次成功不能代表稳定性。同一任务的重复运行需要全新工作区和会话，并记录可控参数。不同任务的难度差异很大，重复十次同一个任务也不等于做了十个独立任务。</p>
+<p>v0.3 支持按任务聚合后比较、配对分析和任务层面的重采样区间。任务数量少、环境不一致、未知模型路由或大量缺失时，显示“观察性结果”，不自动宣布谁更强。详细口径见技术设计第 13 章。</p>
+<h3 id="prd-h27">8.4 Review 的地位</h3>
+<p>先确定性验收，后主观 Review。Review 可以讨论可读性、维护成本、潜在缺陷，但不能把测试失败覆盖为通过。盲评隐藏模型名称；同一 rubric、相同上下文预算；证据不足就返回不足，不要求模型总能给出数值。</p>
+<p>实现 Agent 自审可以作为一个工作流变量；独立 Reviewer 也只是另一个可比较策略。产品不先验宣称谁更好，而是保留对照组和额外成本。</p>
+<h2 id="prd-h28">9. 界面与交互设计</h2>
+<h3 id="prd-h29">9.1 信息架构</h3>
+<pre><code class="language-text">概览
+项目与任务
+实验
+对比
+Agent 配置
+设置
+</code></pre>
+<p>运行详情嵌在实验内，通过稳定 URL 可直接访问。不要另造 IDE 桌面或无限画布。桌面 Web 优先，移动端只要求查看状态、取消和阅读摘要。</p>
+<h3 id="prd-h30">9.2 页面说明</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>页面</th>
+<th>核心内容</th>
+<th>首要操作</th>
+<th>不应出现的设计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>概览</td>
+<td>正在运行、等待、被阻塞、最近证据</td>
+<td>继续查看或创建实验</td>
+<td>无数据时填满虚假排行榜</td>
+</tr>
+<tr>
+<td>项目与任务</td>
+<td>项目来源、任务版本、验收健康</td>
+<td>发布新任务版本</td>
+<td>悄悄修改已经跑过的任务</td>
+</tr>
+<tr>
+<td>Agent 配置</td>
+<td>版本、模型、认证方式、doctor 结果</td>
+<td>检查或创建配置版本</td>
+<td>把不同工具全叫“模型”</td>
+</tr>
+<tr>
+<td>创建实验</td>
+<td>任务、配置、次数、预算、环境</td>
+<td>冻结计划并执行</td>
+<td>默认选中全部模型并大量付费</td>
+</tr>
+<tr>
+<td>实验详情</td>
+<td>Trial 表、进度、失败类型、预算</td>
+<td>筛选、取消、比较</td>
+<td>只给百分比而不解释分母</td>
+</tr>
+<tr>
+<td>运行详情</td>
+<td>概览、差异、检查、事件、制品、使用量</td>
+<td>看失败证据、导出补丁</td>
+<td>把 Agent 自述当平台结论</td>
+</tr>
+<tr>
+<td>对比</td>
+<td>可比条件、原始计数、配对结果</td>
+<td>查看分歧任务</td>
+<td>在不一致条件下强行排第一</td>
+</tr>
+<tr>
+<td>设置</td>
+<td>凭据引用、执行器、存储、策略、审计</td>
+<td>doctor、备份、清理</td>
+<td>在浏览器展示原始密钥</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="prd-h31">9.3 创建实验的四步</h3>
+<p>第一步选择已发布任务；第二步选择已通过 doctor 的配置；第三步检查环境、权限、并发、时间和费用观测能力；第四步确认展开后的 Trial 数量与不可逆消耗提示。</p>
+<p>页面必须展示简单乘法，例如“4 个任务 × 3 个配置 × 2 次 = 24 个 Trial”。这个数字是计划规模，不是预计 API 请求数，也不是费用估算。</p>
+<h3 id="prd-h32">9.4 运行详情的优先级</h3>
+<p>页面头部依次显示：当前阶段、验收结论、清理状态。次行显示任务/配置版本、开始时间、预算、人工介入和运行环境。失败时先展示最直接的独立证据，再显示 Agent 解释。</p>
+<p>事件视图默认显示阶段和完整消息，不以每 token 动画刷屏。原始输出可下载，但可能被截断或脱敏，必须保留这些标记。浏览器不得直接执行 Agent 输出的 HTML、终端控制序列或脚本。</p>
+<h2 id="prd-h33">10. 隔离、权限和隐私的产品承诺</h2>
+<p>默认推荐在专用 Docker 执行环境运行，仅处理本人授权的项目；原仓库、控制数据库、Docker socket、SSH agent、全局登录目录、其他项目和隐藏验证材料都不进入 Agent 工作区。容器能够减少暴露面，但不是运行任意恶意公共代码的绝对安全边界。[W7]</p>
+<p>对现有官方 CLI 的认证或平台兼容性不满足容器场景时，可以显式启用 <code>native-trusted</code> 兼容模式，建议使用独立操作系统用户。界面必须写明“本机进程执行，不提供容器级隔离”，它不能作为 silent fallback，也不能与容器结果默认合榜。Git worktree 本身不是安全隔离。[W6]</p>
+<p>向第三方 Agent 发送代码意味着相应供应商可能接收到仓库内容。导入私有仓库时需确认授权，默认不暴露部署密钥和生产数据。Agent 在拥有工具执行能力时仍可能接触同执行环境内的认证材料；仅放入环境变量不等于密钥对它不可见。</p>
+<p>本产品不宣称能够让 Agent “看不到自己用来调用模型的所有凭据”。需要更强保护的团队场景，应另行设计凭据代理、网络隔离与组织级授权，不把它当作首版已有能力。</p>
+<h2 id="prd-h34">11. 非功能需求与容量目标</h2>
+<p>以下是用于验收的<strong>设计目标</strong>，不是已经测得的性能承诺。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>目标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>部署</td>
+<td>一个版本包；本地 SQLite；无 Redis、Kafka、Kubernetes 前置依赖</td>
+</tr>
+<tr>
+<td>首版并发</td>
+<td>v0.1 同时 1 个 Trial；v0.2 可配置，初始建议全局 2、单账号 1</td>
+</tr>
+<tr>
+<td>控制面资源</td>
+<td>在测试机记录峰值 RSS、事件吞吐与响应时间，再确定可发布目标</td>
+</tr>
+<tr>
+<td>可观察性</td>
+<td>能区分排队、准备、生成、收集、验证、清理与外部限流</td>
+</tr>
+<tr>
+<td>数据完整性</td>
+<td>已确认持久化的状态在进程重启后可解释；不可恢复部分明确标记</td>
+</tr>
+<tr>
+<td>制品上限</td>
+<td>每次运行按策略限日志、文件数、总字节与保留期限</td>
+</tr>
+<tr>
+<td>兼容范围</td>
+<td>先验收 Linux amd64；Intel macOS 通过浏览器和验证过的本地执行配置接入</td>
+</tr>
+<tr>
+<td>安全默认值</td>
+<td>控制服务绑定 loopback、仍需认证；执行必须明确配置，未配置不执行</td>
+</tr>
+</tbody>
+</table></div>
+<p>不对所有 Windows/macOS/Linux 环境一次性承诺执行层完全一致。控制台支持与 CLI、镜像、认证方式的兼容性必须分开声明。</p>
+<h2 id="prd-h35">12. 版本路线与进入下一阶段的条件</h2>
+<h3 id="prd-h36">v0.0 · 可行性验证，不做大界面</h3>
+<p>验证 Pi 的最小服务、SQLite 事务、一个 Runner 子进程和一个真实 CLI。完成认证路径与模型可用性检查、输出解析、真实文件写入、超时取消、无孤儿进程、用量来源确认。保留原始小样本作为适配器 fixture。</p>
+<p><strong>退出门槛：一个已授权入口确实可以完成可丢弃任务并被停止。</strong> 不能只写“理论上支持”。如果第一个 CLI 不满足条件，选择另一个已验证入口，不绕过认证、不暗中转计费路径。</p>
+<h3 id="prd-h37">v0.1 · 一个可信的执行—验收闭环</h3>
+<p>包含项目/任务版本、单 Profile、单 Runner、独立工作区、基线预检、单次执行、取消恢复、差异与检查结果、制品导出和基础认证。使用 Docker 路径作为主要验收路径；本机兼容执行仅在安全边界已明确、测试通过后启用。</p>
+<p><strong>退出门槛：正确补丁通过、错误补丁失败、平台故障未判定；重启与取消不产生重复执行或孤儿进程。</strong> 不要求统计图、Reviewer、自动路由或多租户。</p>
+<h3 id="prd-h38">v0.2 · 三个入口与日常对比</h3>
+<p>加入 Cursor、Grok Build、OpenCode 的通过测试配置、账号级串行与全局有界并发、任务矩阵、对比表和预算检查。适配器与 CLI 版本有兼容矩阵。使用至少两个真实项目的任务进行日常验证。</p>
+<p><strong>退出门槛：不同工具的失败原因、未知费用和人工介入能够清晰区分。</strong> 这是第一版适合你持续使用的产品形态。</p>
+<h3 id="prd-h39">v0.3 · 可信重复实验</h3>
+<p>加入同 Agent 换模型模式、重复数、配对与任务层聚合、可比性提示、基线与验收器校准，记录 CLI/规则/实际模型信息漂移。优先解决“结论是否可信”，而不是丰富图表种类。</p>
+<h3 id="prd-h40">v0.4 · Review 与有界流程实验</h3>
+<p>先做人工 Review，再做可选模型盲评；实现→Review→一次修复是新的 protocol。保存前后补丁和阶段成本，不能覆盖原始 single-pass Trial。依然不自动合并。</p>
+<h3 id="prd-h41">v0.5 · 互操作</h3>
+<p>以需求驱动加入 Harbor 格式子集或其执行器桥接、外部 API 触发、签名结果通知。ACP、ATIF、Herdr 联动各自独立评估，不因为协议存在就同时实现所有协议。[W8]</p>
+<h3 id="prd-h42">v1.0 · 稳定的个人工作台</h3>
+<p>完成安装升级、备份恢复、磁盘配额、兼容矩阵、安全回归、取消重启压力测试和文档。没有多租户、计费、公共榜单，也可以发布 1.0。模型推荐先作为有证据的建议，自动分配必须另立范围。</p>
+<h2 id="prd-h43">13. 产品验收与停止线</h2>
+<p>最终验收不是“页面都能点”，而是以下端到端场景：真实 Agent 改对任务；故意错误和空测试无法获得通过；伪造成功日志不改变验收；凭据失效停止对应账号；控制服务重启不会重复付费启动；取消杀掉进程树；新旧实验快照不互相污染；未知金额不显示零；源仓库没有被写入；报告丢失证据时明确降级。</p>
+<p>首版不能妥协的三件事是：<strong>不误报通过、不失控执行、不隐瞒不可观测性。</strong> 页面美化、多模型覆盖率和复杂统计都应排在这三件事之后。</p>
+<h2 id="prd-h44">14. 产品决策与资料依据</h2>
+<p>本文产品取舍为本次设计判断。以下资料用于核实接入方式与基础设施边界，不代表已对用户账号、额度或运行环境做实测。查阅日期均为 2026-10-04。</p>
+<ul>
+<li>[W1] Cursor，Headless CLI：<a href="https://cursor.com/docs/cli/headless" rel="noopener noreferrer" target="_blank">https://cursor.com/docs/cli/headless</a></li>
+<li>[W2] Cursor，CLI Authentication：<a href="https://cursor.com/docs/cli/reference/authentication" rel="noopener noreferrer" target="_blank">https://cursor.com/docs/cli/reference/authentication</a></li>
+<li>[W3] Grok Build，Headless &amp; Scripting：<a href="https://docs.x.ai/build/cli/headless-scripting" rel="noopener noreferrer" target="_blank">https://docs.x.ai/build/cli/headless-scripting</a></li>
+<li>[W4] Grok Build，Overview：<a href="https://docs.x.ai/build/overview" rel="noopener noreferrer" target="_blank">https://docs.x.ai/build/overview</a></li>
+<li>[W5] OpenCode，CLI：<a href="https://opencode.ai/docs/cli/" rel="noopener noreferrer" target="_blank">https://opencode.ai/docs/cli/</a></li>
+<li>[W6] Git，git-worktree：<a href="https://git-scm.com/docs/git-worktree" rel="noopener noreferrer" target="_blank">https://git-scm.com/docs/git-worktree</a></li>
+<li>[W7] Docker，Engine security：<a href="https://docs.docker.com/engine/security/" rel="noopener noreferrer" target="_blank">https://docs.docker.com/engine/security/</a></li>
+<li>[W8] Harbor，Task format：<a href="https://docs.harborframework.com/tasks/overview" rel="noopener noreferrer" target="_blank">https://docs.harborframework.com/tasks/overview</a></li>
+</ul>
+<p>框架具体提交、已读源码、没有执行的验证以及完整技术决策见《技术设计文档》第 2、19 章。</p>
+</article><article id="doc-design" class="document"><h1 id="design-h1">Coding Agent Lab · 技术设计文档</h1>
+<p><strong>文档版本：1.0 · 设计基线：2026-10-04</strong><br/>
+配套：<a href="01-%E4%BA%A7%E5%93%81%E9%9C%80%E6%B1%82%E6%96%87%E6%A1%A3.md">产品需求文档</a> · <a href="03-%E5%AE%9E%E6%96%BD%E4%BB%BB%E5%8A%A1%E5%8C%85.md">实施任务包</a></p>
+<blockquote>
+<p>本文是可实施的设计基线，不是已实现系统的说明。已通过 GitHub 读取两个框架的固定提交与相关源码，未在本环境完成其构建、测试或性能测量，也未调用用户的模型账号。接口草案是 Agent Lab 自己的接口，除注明外，不代表 Pi/Pipi 已提供这些能力。</p>
+</blockquote>
+<h2 id="design-h2">1. 总体技术决策</h2>
+<p>采用 <strong>Go + sllt/pi 的控制面、同一 Go 可执行文件中的 Runner 子命令、React + TypeScript Web 前端、SQLite + 本地制品存储</strong>。控制面采用模块化单体；执行工作放入独立子进程和明确的执行环境，而不是塞进 HTTP Handler。</p>
+<p>首版只构造一个“定义任务—授权执行—收集改动—独立验收—保留证据”的闭环。真正需要人工重点 Review 的核心是状态转换、进程生命周期、验证边界与用量口径，不是把所有业务改成复杂并发框架。</p>
+<p>主要决定如下。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>决定</th>
+<th>不采用的首版方案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>服务框架</td>
+<td>Pi；只在 transport/bootstrap 等边界引用</td>
+<td>同时维护 Go 与 Rust 控制面</td>
+</tr>
+<tr>
+<td>Runner</td>
+<td>Go 子进程；每个活跃 Attempt 一个受监督进程</td>
+<td>自研 Agent 推理循环、把 CLI 塞入请求协程</td>
+</tr>
+<tr>
+<td>调度</td>
+<td>单服务、持久化计划、有界并发、账号容量控制</td>
+<td>Redis 队列、通用 DAG、分布式租约系统</td>
+</tr>
+<tr>
+<td>数据库</td>
+<td>本地 SQLite，明确事务与 WAL 策略</td>
+<td>首版同时兼容 PostgreSQL/MySQL</td>
+</tr>
+<tr>
+<td>制品</td>
+<td>本地不可变文件、摘要、有限保留</td>
+<td>首版引入 S3 集群、搜索集群</td>
+</tr>
+<tr>
+<td>浏览器实时数据</td>
+<td>REST + SSE，运行控制走显式 API</td>
+<td>首版提供远程任意 Shell WebSocket</td>
+</tr>
+<tr>
+<td>Agent 扩展</td>
+<td>固定编译适配器 + 版本化契约</td>
+<td>动态 Go plugin、WASM 插件平台</td>
+</tr>
+<tr>
+<td>验收</td>
+<td>基线校准、独立重建、可信控制的检查项</td>
+<td>读取 Agent 的“成功”文本直接判定</td>
+</tr>
+<tr>
+<td>统计</td>
+<td>先原始证据与计数，再任务层比较</td>
+<td>预设“综合能力 92 分”</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="design-h3">2. Pi 与 Pipi：基于实际源码的选型</h2>
+<h3 id="design-h4">2.1 本次查阅范围</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>仓库</th>
+<th>默认分支 / 提交</th>
+<th>仓库返回的提交时间</th>
+<th>本次实际读到的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sllt/pi</td>
+<td>master / <code>4c292d04b898d95862ea74e17be7adb115a4ad54</code></td>
+<td>2026-09-26 07:17:21 UTC</td>
+<td>README、go.mod、Build、lifecycle、Build 测试、Build 示例</td>
+</tr>
+<tr>
+<td>sllt/pipi</td>
+<td>master / <code>c265309bf909bf8f4737dfebc543762b11edf561</code></td>
+<td>2026-05-14 08:58:39 UTC</td>
+<td>Cargo.toml、AppContext/Hooks、后台任务入口、SQLite worker 循环</td>
+</tr>
+</tbody>
+</table></div>
+<p>这是当前可访问默认分支的静态快照，不包含未推送代码，也不代表其他分支没有进展。不以提交数量或时间直接判断质量。[R1][R2]</p>
+<h3 id="design-h5">2.2 Pi 已有能力与适配方式</h3>
+<p><code>pkg/pi/build.go</code> 的 <code>Build</code> 使用显式配置与资源声明，区分 Owned/Borrowed；资源可按顺序启动、反向关闭。它适合将 SQLite、HTTP 服务和调度监督器的启动关闭放到一处管理。[R3]</p>
+<p><code>pkg/pi/lifecycle.go</code> 的 <code>app.Go(name, fn)</code> 是<strong>应用级长生命周期 Worker</strong>：必须在应用启动前注册；普通错误会触发应用关闭。它不是持久化作业队列，也不是每次 Trial 的提交接口。[R4]</p>
+<p>因此，Lab 只在启动时注册固定的 scheduler/reconciler 等循环。某次 Agent 返回非零、测试失败或账号限流，应持久化为运行结果并继续服务，不能向 Pi 的应用 Worker 冒泡为 fatal error。注册成功也不能被当成任务已持久化。</p>
+<p>README 描述了 <code>HTTPHandler()</code>、显式 HTTP status、<code>response.Stream</code>、身份与业务授权边界。它们与 API 和 SSE 的需求相符，但本文没有读取 stream 全部实现，所以长连接 flush、取消和中间件超时必须在 v0.0 做集成验证。[R5]</p>
+<p><code>build_test.go</code> 中已有配置隔离、SQLite 启动、资源回滚、并发生命周期等测试用例。这是代码中可见的测试覆盖，不是本次已经运行通过的证明。[R6]</p>
+<h3 id="design-h6">2.3 Pipi 的真实优点和剩余工作</h3>
+<p>Pipi 不是“只能写简单 Rust Web”的框架。当前 Cargo.toml 使用 Axum、Tokio、SeaORM/SQLx，并具有认证、存储、缓存和多种后台队列能力；<code>AppContext</code>、<code>Hooks</code>、<code>Initializer</code> 可以扩展路由、共享服务与关闭逻辑。[R7][R8]</p>
+<p>但现有后台队列不等于 Lab 运行引擎。在已读的 <code>src/bgworker/mod.rs</code> 范围中，未配置 provider 的 <code>Queue::None</code> 分支可以返回 <code>Ok(())</code>；Lab 启动必须对此 fail-closed，不能将“没有可用执行器”表达为成功入队。[R9]</p>
+<p>在 <code>src/bgworker/sqlt.rs</code> 已读的 worker 循环中，取消检查位于循环入口及空闲等待，正在执行的 <code>handler(...).await</code> 没有由该层主动与取消令牌竞速。具体 handler 可以自行协作取消，但长时间 CLI、进程树终止与强制回收仍要由产品实现，不能仅依赖队列 CancellationToken。[R10]</p>
+<p>Pipi 默认同时启用多个后台队列 feature，Pi 的 go.mod 也包含较多数据源和观测依赖。两者都应测量实际依赖和产物，不可简单声称“Go/Pi 天然更轻”。Pipi 声明的 MSRV 也需要与真实锁文件共同验证，而不是仅凭声明作保证。[R7][R11]</p>
+<h3 id="design-h7">2.4 为什么本项目选 Pi</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>评价维度</th>
+<th>Pi / Go</th>
+<th>Pipi / Rust</th>
+<th>对本项目的判断</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>现成服务与生命周期边界</td>
+<td>显式 Build、资源所有权、固定 Worker</td>
+<td>Hooks/Initializer 和后台任务</td>
+<td>均可用；Pi 更贴合拟采用的显式组装</td>
+</tr>
+<tr>
+<td>日常产品代码</td>
+<td>HTTP、SQL、文件、进程监督、配置</td>
+<td>相同能力可以实现</td>
+<td>项目并不需要用 Rust 性能换取额外复杂度</td>
+</tr>
+<tr>
+<td>长任务取消与恢复</td>
+<td>需要 Lab 自己实现</td>
+<td>同样需要 Lab 自己实现</td>
+<td>Pipi 的队列不能免除领域设计</td>
+</tr>
+<tr>
+<td>运行时类型与内存约束</td>
+<td>需谨慎检查状态与并发</td>
+<td>Rust 类型系统有帮助</td>
+<td>不能代替沙箱、凭据隔离和验证可信度</td>
+</tr>
+<tr>
+<td>对你现有项目的复用</td>
+<td>可继续复用 Pi 的应用边界和经验</td>
+<td>可以推动 Pipi 实战</td>
+<td>这次优先产品闭环，而非同时验证框架路线</td>
+</tr>
+<tr>
+<td>执行器语言</td>
+<td>单 Go 版本、单套构建与调试</td>
+<td>Rust Runner 可做但增加第二套链路</td>
+<td>首版不混用</td>
+</tr>
+<tr>
+<td>性能证据</td>
+<td>本次未测量</td>
+<td>本次未测量</td>
+<td>不以虚构跑分决策</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>结论是项目优先级判断，而不是 Rust 能力判断。</strong> 假如目标改为“用一个真实产品推动 Pipi”，Rust 方案仍然成立；但应把 Pipi 的生命周期、后台任务和 feature 验证单列里程碑，不能让 Lab 同时承担框架重构。当前建议直接选 Pi，未来只在测量出独立热点时考虑局部改写。</p>
+<h3 id="design-h8">2.5 与 Pi 的具体边界</h3>
+<p><code>internal/domain</code>、<code>internal/app</code>、<code>internal/runner</code> 不依赖 <code>*pi.Context</code>。业务方法接受标准 <code>context.Context</code> 和明确参数。Pi 负责 transport 适配、已验证身份的接入与应用资源生命周期，不承载 Task/Trial/Sandbox 业务概念。</p>
+<p>SQLite 的首版实现选择由 Lab 的 <code>store/sqlite</code> 持有一个 <code>*sql.DB</code>，通过 Pi 的 <code>WithResource</code> 显式管理启动、迁移、关闭，不同时启用 <code>WithManagedSQL</code>。原因是 WAL、单写者、备份与崩溃恢复是产品必须看得见的存储契约；不是 Pi SQL 不可用。以后改为 Pi SQL 句柄时，只替换存储边界并确保唯一关闭责任。</p>
+<p>HTTP 采用 <code>app.HTTPHandler()</code> 接入宿主 <code>http.Server</code>，由宿主组合 API 与嵌入式静态文件；Pi 自带 HTTP/gRPC listener 关闭，避免双重监听。所有路由在获取 Handler 前注册，HTTP Server 的生命周期仍通过显式资源监督。实际代码需使用已核对 API，不能让模型臆造 <code>app.RunJob</code>、<code>app.Sandbox</code> 或未经核实的静态文件辅助方法。</p>
+<p>依赖先锁定上述提交所对应的可解析 module 版本，实施时通过 Go 工具确认可用 tag/pseudo-version；不使用 <code>@latest</code>，不在文档中伪造未验证的 pseudo-version。</p>
+<h2 id="design-h9">3. 系统结构与部署</h2>
+<h3 id="design-h10">3.1 模块和信任边界</h3>
+<pre><code class="language-text">浏览器
+  │ REST / SSE，登录会话
+  ▼
+agentlab serve                    可信控制进程
+  ├─ Pi transport / bootstrap
+  ├─ Project / Task / Profile / Experiment 服务
+  ├─ Scheduler + Attempt Supervisor
+  ├─ Verifier Coordinator / Report
+  ├─ SQLite 元数据（只有控制进程写）
+  └─ Artifact Store
+        │ 私有 IPC + 一次性 Attempt 能力凭证
+        ▼
+agentlab runner                   本机受监督子进程
+  ├─ Workspace / Process / Container Supervisor
+  ├─ CLI Adapter / Event Normalizer / Journal
+  ├─ Agent 容器或明确授权的 native-trusted 进程
+  └─ 新的 Candidate/Verifier 环境
+        ▲                         隐藏材料不在 Agent 阶段出现
+        └─ 固定基线 + 经过校验的改动包
+</code></pre>
+<p>“同一个程序包”不意味着“所有逻辑同一进程执行”。Runner 子命令不启动 Pi Web 服务，不直接访问控制数据库；它负责执行机械动作、发送事件和保存本次运行的受控日志。最终验收归类和实验状态仍由控制进程按照可信规则决定。</p>
+<p>每个活跃 Attempt 使用独立 Runner。v0.1 只有一个活跃 Attempt，v0.2 才启用有界并发。此时不设计远程 Runner 注册中心、动态伸缩或多控制节点。</p>
+<h3 id="design-h11">3.2 建议代码组织</h3>
+<pre><code class="language-text">cmd/agentlab/                 serve / runner / doctor / export / backup
+internal/bootstrap/          Pi、资源所有权、配置、进程入口
+internal/transport/http/     API、认证适配、SSE、错误映射
+internal/domain/             版本、Trial、状态与纯策略
+internal/app/                用例服务、事务边界、验收协调
+internal/store/sqlite/       SQL、迁移、并发控制
+internal/scheduler/          调度、账户容量、恢复协调
+internal/runner/             私有协议、进程树、执行阶段
+internal/executor/           docker；native-trusted 可选
+internal/agent/              adapter contract
+internal/agent/cursor/
+internal/agent/grok/
+internal/agent/opencode/
+internal/workspace/          基线、文件清单、改动包
+internal/verifier/           校验协议、结果解析、基线预检
+internal/artifact/           摘要、写入、导出、保留
+internal/report/             指标口径与兼容性
+web/                         React / TypeScript / Vite
+migrations/                  版本化 SQL
+fixtures/                    CLI 事件、假执行器、任务校准样本
+</code></pre>
+<p>可以按实际代码量合并很小的 package，但不要将 framework context 向领域层扩散。不引入通用 DI 容器或 CQRS 框架；构造函数和少量接口足够。</p>
+<h3 id="design-h12">3.3 初始部署约束</h3>
+<p>控制面默认绑定 <code>127.0.0.1</code>，使用本地盘。Linux amd64 为容器执行首批认证平台；Intel Mac 可以访问 Web，也可验证 Docker Desktop 与 CLI 登录组合。<code>native-trusted</code> 的 Mac 执行需单独测试进程组与认证目录，不能凭 Go 可以交叉编译就宣布支持。</p>
+<p>镜像拉取和依赖构建由管理员批准的准备阶段完成，不让任务自由请求 Docker socket。v0.1 不自动从仓库读取 Dockerfile 并以宿主权限构建。可执行代码的准备/安装脚本本身也要在受控环境中运行。</p>
+<h2 id="design-h13">4. 领域模型、不可变版本与可比性</h2>
+<h3 id="design-h14">4.1 版本图</h3>
+<pre><code class="language-text">Project ── Task ── TaskVersion ───┐
+AgentProfile ── ProfileVersion ──┼─ Experiment snapshot
+EnvironmentVersion ─────────────┤         │
+ProtocolVersion ────────────────┘         └─ Trial × N ── Attempt × M
+                                                          │
+                                                     Evidence / Checks
+</code></pre>
+<p>v0.1 的 Experiment 可以只有一个 Trial，界面可隐藏这个概念；底层仍保留计划快照，避免 v0.2 重写数据模型。未来 Review 是独立实体，不覆盖生成结果。</p>
+<h3 id="design-h15">4.2 必须冻结的内容</h3>
+<p>TaskVersion 保存完整提示词、项目授权引用、基线 commit/tree 内容摘要、允许修改范围、公开规则、验收配置与摘要、环境版本、预算和任务类型。源码不可因分支移动而变化。</p>
+<p>ProfileVersion 保存适配器版本、CLI 路径/版本/可得的二进制摘要、请求模型 ID、参数、规则/技能/插件/MCP/hooks 的受控快照、权限、认证引用和官方设置中不可冻结的说明。凭据本体不进入版本快照。</p>
+<p>EnvironmentVersion 保存 OS/architecture、镜像 digest、工具链、锁文件摘要、资源限额、网络模式、缓存策略和认证挂载策略。仅保存镜像 tag 不足以冻结环境。</p>
+<p>ProtocolVersion 保存是否允许自主工具调用、总时间、Agent 内重试的可观测性、是否有人介入、反馈范围、是否做 Review/修复。CLI 内部不可见重试也应标为 unknown，而不是假设为零。</p>
+<h3 id="design-h16">4.3 草稿与执行快照</h3>
+<p>YAML 只用作人类编辑的草稿格式。发布时严格解码、拒绝未知字段和重复键、限制大小/深度，转成字段明确的规范 JSON，填充真实摘要和版本引用后计算 SHA-256。哈希算法与 canonicalization 版本一同保存；金额不用浮点数。</p>
+<p><code>base_ref: master</code> 可以出现在草稿中，但执行快照必须是完整固定提交及源码内容摘要。<code>environment_ref</code> 必须解析到已存在版本；未验证模型名、空 doctor 结果、占位镜像摘要都不能进入执行队列。</p>
+<h3 id="design-h17">4.4 两种指纹，不做错误比较</h3>
+<p><code>execution_fingerprint</code> 包含 Task、Profile、Environment、Protocol 等全部版本，标识本次条件。</p>
+<p><code>comparison_key</code> 根据实验类型计算：Agent 配置对比允许 Profile 不同；受控模型对比只允许声明的模型变量不同；其他预算、验收和环境保持一致。不能直接要求不同模型的完整 fingerprint 相同，也不能仅按任务标题归组。</p>
+<p>实际模型若由服务端报告为不同 ID，保留任务结果，但标记 <code>model_resolution_mismatch</code> 并暂停默认合榜。云端 alias 可能变化时，报告中显示不可完全复现的限制，不将请求别名当成固定权重版本。</p>
+<h2 id="design-h18">5. Task 与验证协议</h2>
+<h3 id="design-h19">5.1 任务配置原则</h3>
+<p>示例草稿见 <code>examples/task-draft.yaml</code>。任务引用控制面已登记、由用户批准的 verifier，不把任意 <code>curl | bash</code> 当成可信测试。公开要求应给 Agent 足够信息，隐藏验证实现不包含未告知的新业务要求。</p>
+<p>通用检查类型保持少量：build、regression、acceptance、policy、manual。<code>required</code> 为真时必须有结果；<code>manual</code> 未完成不能自动 pass。每个检查保存稳定 check ID、阶段限时、最低用例数或预期 case ID、结果解析方式与可信度级别。</p>
+<h3 id="design-h20">5.2 基线预检</h3>
+<p>对修复/新功能任务，回归项通常要求 baseline=pass，新增目标用例要求 baseline=fail；候选补丁两者都应通过。重构类任务可以全部 baseline=pass，并另外定义接口或结构约束，不强制每个任务都必须有红测试。</p>
+<p>Task 发布前预检并校准 verifier。实验执行前，重新检查环境解析和预检缓存有效性；只有 source/environment/verifier 三者摘要一致才可复用基线结果。否则重新预检。</p>
+<p>预检失败属于任务或环境配置问题，阻止模型调用。不能先花额度生成，再发现原项目本来就不编译。</p>
+<h3 id="design-h21">5.3 独立验证流程</h3>
+<p>Agent 停止且其子进程被确认清理后，由可信收集器得到内容清单和改动包。验证端从原始基线重建，再应用允许的改动；不使用 Agent 改过的 git index、构建缓存、测试结果文件或已启动服务作为验收事实。</p>
+<p>对 HTTP/UI 场景，优先使用独立 verifier 容器控制黑盒请求，Candidate 容器运行修改后的应用。两者在受限的临时网络内，Candidate 不拥有 verifier 文件系统。Playwright 的浏览器、字体、视口与截图环境固定；图像差异只代表约定快照差异，不自动等于“设计美感”。[W9]</p>
+<p>对 Go/Rust 单元测试，需要在候选代码参与执行的环境中编译或加载测试。此时只能承诺<strong>隐藏测试在做题阶段不可见</strong>，不能保证恶意候选代码无法干扰进程内测试或伪造其框架输出。结果标记 <code>assurance=inprocess</code>；更强黑盒检查标记 <code>assurance=blackbox</code>。read-only 测试挂载可防直接修改，但不防读取，也不等于完整反作弊。</p>
+<p>Harbor 已提供独立 verifier 环境选项，说明“重新建环境验收”是可复用的方向；但其默认共享模式、制品传递与 Lab 协议并不自动等价，后续桥接时必须显式映射。[W10]</p>
+<h3 id="design-h22">5.4 判定规则</h3>
+<p>所有必须检查均有可信来源、满足数量/ID预期、通过且没有 policy 违规，才可以 pass。退出码为 0 但零个用例、只输出“PASS”、删除测试或跳过必须项，不构成通过。</p>
+<p>自动检查失败不能由模型 Review 改成通过；对 verifier 的修复必须创建新版本并重新验收，保留旧记录。缺失关键产物、解析器不能识别新版本输出或 verifier 自身崩溃，结论为 inconclusive。</p>
+<h2 id="design-h23">6. 存储模型与事务</h2>
+<h3 id="design-h24">6.1 SQLite 策略</h3>
+<p>SQLite WAL 允许读写并发但仍只有一个写者，且 WAL 要求同主机共享内存协调，不适合放在网络文件系统。[W8] 首版因此采用一个控制进程、短事务、有限连接，所有日志不逐 token 写数据库。</p>
+<p>建议配置：<code>foreign_keys=ON</code>；本地 WAL；<code>synchronous=FULL</code> 用于确认后的元数据持久性；适当 <code>busy_timeout</code>；写连接串行化。连接级 PRAGMA 要对每个新连接设置，不能在任意一个连接执行一次就假设全池生效。实际 DSN/驱动选项在 v0.0 实测。</p>
+<p>数据库访问以 <code>database/sql</code> 为边界，<code>modernc.org/sqlite</code> 版本与锁定依赖一致；选择此方案是避免首版额外 native SQLite 工具链，不是性能优越承诺。查询明确编写，初期不用 ORM；动态排序字段采用白名单。</p>
+<h3 id="design-h25">6.2 最小实体表</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>表</th>
+<th>主要字段</th>
+<th>约束/说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>projects</td>
+<td>id, name, source_spec_json, created_at</td>
+<td>source 不含明文凭据</td>
+</tr>
+<tr>
+<td>tasks</td>
+<td>id, project_id, name, draft_json</td>
+<td>草稿可编辑</td>
+</tr>
+<tr>
+<td>task_versions</td>
+<td>id, task_id, version, snapshot_json, digest</td>
+<td><code>(task_id,version)</code> 唯一；已发布不可改</td>
+</tr>
+<tr>
+<td>profiles</td>
+<td>id, name, account_id, draft_json</td>
+<td>逻辑配置</td>
+</tr>
+<tr>
+<td>profile_versions</td>
+<td>id, profile_id, version, snapshot_json, digest</td>
+<td>不存明文 key</td>
+</tr>
+<tr>
+<td>environment_versions</td>
+<td>id, name, snapshot_json, digest</td>
+<td>镜像解析固定</td>
+</tr>
+<tr>
+<td>accounts</td>
+<td>id, auth_kind, credential_ref, concurrency, blocked_reason</td>
+<td>控制账号容量，不解析供应商账单</td>
+</tr>
+<tr>
+<td>experiments</td>
+<td>id, mode, protocol_json, plan_json, plan_digest, state</td>
+<td>冻结 Trial 展开表；计划不可改</td>
+</tr>
+<tr>
+<td>trials</td>
+<td>id, experiment_id, task_version_id, profile_version_id, repeat_index, execution_state, verdict, current_attempt_id, row_version</td>
+<td>唯一计划格子；CAS 更新</td>
+</tr>
+<tr>
+<td>attempts</td>
+<td>id, trial_id, number, account_id, fence, runtime_json, state, reason, cleanup_state, heartbeat_at</td>
+<td>保留每次物理执行与原因</td>
+</tr>
+<tr>
+<td>checks</td>
+<td>id, attempt_id, verifier_digest, check_id, check_run, result_json, evidence_ref</td>
+<td>不接受 Agent 直接写入</td>
+</tr>
+<tr>
+<td>artifacts</td>
+<td>id, attempt_id, kind, digest, bytes, storage_key, status</td>
+<td>状态区分 staged/committed/missing</td>
+</tr>
+<tr>
+<td>usage_records</td>
+<td>id, attempt_id, source, source_event_id, measures_json</td>
+<td>来源内去重；nullable 数值</td>
+</tr>
+<tr>
+<td>idempotency_keys</td>
+<td>actor_id, operation, key, body_digest, result_ref, expires_at</td>
+<td>同 key 不同 body 返回冲突</td>
+</tr>
+<tr>
+<td>audit_events</td>
+<td>id, actor_id, action, resource_id, at, detail_json</td>
+<td>包含批准、取消、清理、导出等</td>
+</tr>
+</tbody>
+</table></div>
+<p>v0.1 可以把少量严格结构化字段保存在版本 JSON 中，不用把每个 Provider 参数拆成列；但是状态、关联、唯一性与常用过滤列必须结构化。认证用户/会话表属于安全基础模块；v0.4 才新增 Review 表。</p>
+<h3 id="design-h26">6.3 关键索引与不变量</h3>
+<pre><code class="language-sql">-- 示例：依赖相应建表迁移；不是完整安装脚本。
+CREATE UNIQUE INDEX uq_trial_cell
+ON trials(experiment_id, task_version_id, profile_version_id, repeat_index);
+CREATE UNIQUE INDEX uq_attempt_number ON attempts(trial_id, number);
+CREATE UNIQUE INDEX uq_check_run ON checks(attempt_id, check_id, check_run);
+CREATE INDEX ix_trial_queue ON trials(execution_state, experiment_id);
+CREATE INDEX ix_attempt_cleanup ON attempts(cleanup_state, heartbeat_at);
+CREATE UNIQUE INDEX uq_request_key
+ON idempotency_keys(actor_id, operation, key);
+</code></pre>
+<p>账号容量取得、Trial 占用与 Attempt 创建发生在同一个短写事务中。不要先启动 Agent、随后才写入数据库；但事务提交也不代表外部 CLI 已启动。状态必须允许“已占位但尚未启动”。</p>
+<p>建议在有界的单写调度路径中检查活跃账号占用。v0.1 不把容量计数冗余成容易漂移的“remaining”字段；从持久状态或同事务内的容量记录计算。<code>cleanup=quarantined</code> 的执行仍占用对应容量，直到确认回收。</p>
+<h3 id="design-h27">6.4 状态与文件的一致性</h3>
+<p>SQLite 与文件系统没有跨资源原子事务。制品先写临时路径、flush/fsync、在同一文件系统内 rename，再提交元数据引用；需要持久化的目录项按支持平台同步。崩溃可能产生孤儿文件，由恢复扫描处理。</p>
+<p>如果数据库引用的文件缺失或摘要不符，标记 evidence_missing 并降级展示，不能仍称完整可复现。日志可采用分段 durability watermark：只有已刷盘并登记的游标算持久化确认；不能声称每个已显示 token 在掉电后都存在。</p>
+<h2 id="design-h28">7. 调度、状态机、取消和恢复</h2>
+<h3 id="design-h29">7.1 三组状态</h3>
+<p><code>execution_state</code>：<code>queued → preparing → running → collecting → verifying → completed</code>；非终态可进入 <code>cancelling → cancelled</code>；无法继续执行的基础设施问题进入 <code>aborted</code>。</p>
+<p><code>verdict</code>：<code>unverified | pass | fail | inconclusive</code>。</p>
+<p><code>cleanup_state</code>：<code>pending | clean | failed | quarantined</code>。</p>
+<p>正常验收完成时 completed + pass/fail；在公开时间预算内确定未完成，可以在进程已终止后 completed + fail + agent_time_limit。认证、额度、执行器崩溃、关键证据缺失等无法评判情况使用 aborted + inconclusive。用户取消使用 cancelled + unverified，并保留已有部分检查，但不纳入完成率分子。</p>
+<p>功能已验收的记录可以先 completed，清理仍 pending；<strong>账号容量只能在 clean 后释放</strong>。清理异常作为显著告警，不能因为评分已经生成就忽略孤儿进程。</p>
+<h3 id="design-h30">7.2 Trial 与 Attempt 的关系</h3>
+<p>Trial 是计划样本；Attempt 是实际执行。v0.1 禁止自动重跑 Agent，默认 <code>max_auto_infra_retries=0</code>。用户手工重试会创建新的 Attempt 并注明原因，原有结果不被覆盖。真正的独立重复实验创建新的 Trial。</p>
+<p>v0.2 若加入基础设施自动恢复，仅允许有充分证据证明尚未进入模型调用阶段的准备失败；不确定是否已经调用过 Provider 时不得自动重启。不允许通过“重试直到成功”美化首轮通过率。</p>
+<p>验证器自身的重跑可以复用同一不可变补丁，但检查记录增加 <code>check_run</code>，不能改写以前的失败。改变 verifier 内容仍要生成新版本。</p>
+<h3 id="design-h31">7.3 启动流程</h3>
+<ol>
+<li>验证 Task/Profile/Environment、用户授权和账号状态，计算计划与预算。</li>
+<li>在 SQLite 短事务中检查未取消与容量，创建 Attempt、随机能力凭证摘要、递增 fence，将 Trial 置 preparing。</li>
+<li>事务提交后启动 Runner，将 ExecutionSpec 通过私有通道发送，不把权限令牌放入可泄露的命令行。</li>
+<li>Runner 创建独立环境，先持久记录“即将允许启动 Agent”，再启动 CLI，并报告事实事件。</li>
+<li>CLI 结束后，Runner 确认该阶段进程树停止；收集改动、重建验证环境、运行检查、提交制品清单。</li>
+<li>控制端校验当前 Attempt/fence、证据和状态后提交结果；清理完成后释放容量。</li>
+</ol>
+<p>fence 只防止旧执行器把状态写回覆盖新结果，不会撤销已经发给 Provider 的请求，也不能保证外部计费 exactly-once。</p>
+<h3 id="design-h32">7.4 私有 Runner 协议</h3>
+<p>首版使用继承的私有 pipe 或 Unix socket 的 NDJSON 帧协议，限定最大帧长度和协议版本。Agent stdout/stderr 必须单独捕获，不能直接复用 Runner 的控制 stdout。控制凭证和 IPC fd 不传给 Agent 子进程。</p>
+<p>控制消息：Start(ExecutionSpec)、Cancel(reason)、Shutdown。Runner 事件：Ready、PhaseChanged、Heartbeat、LogSegmentCommitted、PatchCollected、CheckObserved、UsageObserved、CleanupCompleted、Finished。</p>
+<p>每条事件有 attempt_id、fence、sequence、event_type；控制端按私有通道认证身份，不信任 Agent 文本里的 run_id 或 event_type。重复 sequence 可幂等丢弃，缺号要保留 gap 标记。</p>
+<p>Runner 没有修改任意 Trial 的权限。IPC 接收端也不允许通过“执行任意命令”消息扩展能力；它只能执行已经冻结、用户授权的 ExecutionSpec。</p>
+<h3 id="design-h33">7.5 取消与进程树</h3>
+<p>取消 API 先在事务中写取消意图，再返回 202。Supervisor 检查后发送取消；Runner 先温和终止、等待有限宽限期，再强制终止并 reap。HTTP 连接关闭不触发取消 API。</p>
+<p>Go 的 <code>os/exec</code> 不隐式经过 shell，适合使用 argv 启动；但仅使用 <code>exec.CommandContext</code> 不等于完整处理所有后代进程。[W7] Unix native 模式需进程组与退出回收；Docker 模式用已记录容器 ID 停止/kill/remove，并验证不存在。Windows Job Object 不在首批承诺范围。</p>
+<p>不能仅依赖父 PID 判断进程身份，避免 PID 复用误杀。使用创建时记录的资源 ID、随机标识和运行元数据；native 无法确认身份时进入人工回收，不根据猜测杀死其他进程。</p>
+<h3 id="design-h34">7.6 控制面重启与失联</h3>
+<p>本机首版策略是 <strong>不透明续跑、不盲目重跑</strong>。正常关闭先停止调度，再取消活跃 Runner；控制通道 EOF 时 Runner 尝试停止其管理的所有资源并刷盘。控制面恢复后扫描未终结 Attempt、运行 journal、带受控标签的容器和资源清单。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>恢复发现</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已持久化最终结果和一致制品</td>
+<td>幂等补交元数据；核对清理</td>
+</tr>
+<tr>
+<td>Runner 已退出，资源已清理，只有部分结果</td>
+<td>aborted/inconclusive；保留部分证据</td>
+</tr>
+<tr>
+<td>仍有属于本 Attempt 的容器</td>
+<td>先确认身份并停止、回收；不启动替代执行</td>
+</tr>
+<tr>
+<td>是否还在执行无法确认</td>
+<td>quarantined、冻结容量，等待明确处理</td>
+</tr>
+<tr>
+<td>准备占位但有证据证明从未启动</td>
+<td>终结该 Attempt；按配置允许重新排队或人工重试</td>
+</tr>
+<tr>
+<td>控制数据与文件摘要冲突</td>
+<td>隔离记录，不强行修成 pass</td>
+</tr>
+</tbody>
+</table></div>
+<p>首次实现不用“租约到期立刻接管”的分布式方案。心跳失联是调查信号，不是已经停止的证据。故障恢复的不确定费用也要保留为 unknown。</p>
+<h3 id="design-h35">7.7 与 Pi 应用生命周期的结合</h3>
+<p>Pi 的固定 supervisor loop 可以调用 Scheduler.Run(ctx)，但该循环内部必须区分 <code>TrialFailure</code> 与 <code>ApplicationFatal</code>。前者记录结果并继续；只有数据库永久不可写、核心状态不变量破坏等导致服务无法安全运行的情况，才令应用 Worker 返回错误。网络暂时失败与模型调用失败不应关闭 Web。</p>
+<p>资源清理顺序应为：关闭新提交/调度入口 → 取消并回收 Runner → 刷盘日志与结果 → 停止 HTTP/SSE → 关闭数据库。启动时以相反依赖顺序准备。SSE/HTTP 在 draining 阶段只读可见，不能再创建任务。</p>
+<h2 id="design-h36">8. Workspace、Sandbox 与安全边界</h2>
+<h3 id="design-h37">8.1 三个文件域</h3>
+<p>控制域保存 SQLite、认证配置、执行 journal、verifier、参考解和制品索引；Agent 域只包含基线工作树、被批准的公开上下文、临时 HOME 与有限的认证材料；Verifier 域包含独立验收材料和从基线重建的候选代码。</p>
+<p>容器挂载必须逐项白名单配置。禁止挂载整个主目录、原项目根、共享可写 <code>.git</code>、控制面数据目录、Docker socket、SSH agent socket 和其他 Agent 的会话。Agent 容器不允许直接访问控制 API 或本机管理网段。</p>
+<h3 id="design-h38">8.2 基线和工作区创建</h3>
+<p>仓库解析由控制侧完成并校验来源。远程来源默认只接受明确允许的 HTTPS host；本地仓库只能由管理员登记到允许根目录。拒绝任意 <code>file://</code>、scp-like URL、重定向到内网、未批准的子模块和 Git transport helper。网络访问防护同时考虑 DNS 解析与实际连接地址，不能仅做字符串前缀判断。</p>
+<p>将固定基线导出为独立文件树；确有 Git 工具需要时，在副本中生成仅含基线的独立仓库。关闭自动 hooks、模板和继承全局 Git 配置，不暴露包含未来修复的历史。v0.1 默认不支持任意 submodule/LFS；需要时单独制作并冻结展开后的输入。</p>
+<p>Git worktree 会共享部分仓库元数据，因此不是安全沙箱。[W6] 可以在 native-trusted 自用模式中作为便利选项，但不是严格实验的默认隔离方式。</p>
+<h3 id="design-h39">8.3 改动收集不能只信 git diff</h3>
+<p>可信收集器对停止后的工作树进行有界遍历，以基线内容清单为参照，记录增加、修改、删除、文件模式和二进制内容。Agent 可以修改自己的 <code>.git/index</code>，因此不能把它返回的 diff 当成唯一真相。</p>
+<p>不跟随越界 symlink、不导入设备文件/FIFO/socket；限制路径长度、文件数、单文件大小和总大小，拒绝绝对路径、<code>..</code> 路径、危险 gitlink 与逃出工作区的硬链接关系。正常符号链接若任务确需使用，应有单独类型校验与平台测试，首版可以明确拒绝。</p>
+<p>改动包采用内容清单 + blob，导出的 <code>patch.diff</code> 是方便人类使用的视图。应用改动到干净基线后重新计算内容摘要，确保验证的内容与收集的内容一致。新增且未跟踪的源码不能因为未加入 Git index 而被漏掉。</p>
+<h3 id="design-h40">8.4 Docker 执行策略</h3>
+<p>使用预先批准并按 digest 锁定的镜像；非 root 用户、只读根文件系统、有限可写工作区/tmp、drop capabilities、no-new-privileges、PID/CPU/内存/磁盘限额，禁止 privileged、host network 和任意宿主 bind mount。</p>
+<p>Agent 阶段需要访问模型服务，但验证阶段通常不需要公网。Docker bridge 本身不提供域名 allowlist；仅设置 <code>HTTP_PROXY</code> 也不能阻止代码绕过代理。要声明 <code>network=restricted</code>，必须有可验证的强制出口控制与内网阻断；没有该能力时诚实标记 <code>network=unrestricted</code>，仅允许运行本人可信任务，不用于严格隔离组。</p>
+<p>首版可以先验收“无危险宿主挂载 + 验证阶段离线 + 有限资源”的个人场景，再单独完善模型 API 的强制出口路径。不能因为容器启动成功就声称恶意代码无法出网或逃逸。Docker 官方安全文档也强调 daemon 与容器配置的信任边界。[W11]</p>
+<p>多个实验不共享可写 npm/cargo/go build 缓存；需要加速时使用准备好的只读依赖缓存或分 Trial 可写层，并记录缓存策略。热缓存与冷缓存的运行时间不能直接混报。</p>
+<h3 id="design-h41">8.5 native-trusted 兼容模式</h3>
+<p>该模式允许在已授权的本机 CLI 环境下执行，便于复用特定官方登录，但必须显式确认。独立 OS 用户比仅换 HOME 更能减少对本人文件的暴露；平台仍不能承诺它与 Docker 同等安全。</p>
+<p>原有 HOME 中的登录、规则、技能、MCP、hook 和历史会话不能全部继承后仍称可控实验。通过 profile 注册需要的最小配置；若工具不支持隔离加载，则记录该限制，实验归到 observational/native 分组。</p>
+<p>native 模式无法依靠“独立目录”阻止同 UID 进程读取控制面数据，因此严格多用户或对抗性任务不允许使用。强安全需求应采用专用 VM/机器与单独授权，而非不断给目录加约定。</p>
+<h3 id="design-h42">8.6 凭据的真实保护范围</h3>
+<p>控制面只保存 <code>credential_ref</code>，解析发生在受信任执行准备侧；浏览器不能取回明文。使用系统凭据存储或权限受限文件。备份与导出默认排除凭据；凭据轮换不修改旧实验的内容摘要，只记录凭据版本引用与时间。</p>
+<p>官方登录的 token 刷新和 Keychain 依赖必须在 doctor 中实测。不能为了容器可用而随意复制整套登录目录；只导入工具文档允许、且授权边界清楚的最小材料。</p>
+<p>放在同一 Agent 执行环境里的 API key，理论上可能被该 Agent 的工具或候选代码读到。环境变量、只读文件和日志脱敏都不能消除这一点。采用最小权限、专用可撤销凭据和出口约束；更强的凭据代理在后续版本独立设计。</p>
+<h2 id="design-h43">9. Agent Adapter 合约与三个首选入口</h2>
+<h3 id="design-h44">9.1 Adapter 做什么、不做什么</h3>
+<p>Adapter 仅负责能力检测、准备启动参数、解析官方输出和报告工具特有事实。超时、进程回收、权限、文件收集和最终判定由通用 Runner/Verifier 处理。</p>
+<p>它不隐藏新的推理循环，不自主无限续聊，不把模型调用失败自动换成另一个 Provider。CLI 自带的自主多步行为属于该 Agent 的能力，需要记录而不是重新实现。</p>
+<h3 id="design-h45">9.2 建议的 Go 接口草案</h3>
+<pre><code class="language-go">// Agent Lab 的接口草案；用于固定边界，不是 Pi 的已有 API。
+type Adapter interface {
+    Name() string
+    Probe(ctx context.Context, req ProbeRequest) (Capabilities, error)
+    BuildLaunch(ctx context.Context, req LaunchRequest) (LaunchSpec, error)
+    NewDecoder() EventDecoder
+}
+
+type LaunchSpec struct {
+    Executable string
+    Args       []string          // 不拼接 shell；不包含凭据
+    WorkDir    string
+    Env        map[string]string // 净化后的 allowlist
+    StdinFile  string            // 仅在 CLI 明确支持时使用
+}
+
+type Capabilities struct {
+    CLIVersion            string
+    SupportsHeadless      bool
+    SupportsStructuredLog bool
+    ReportsModelID        bool
+    ReportsUsage          bool
+    SupportsNativeBudget  bool
+    SupportsSessionResume bool
+    TestedPlatform        string
+}
+
+type EventDecoder interface {
+    Decode(stream string, frame []byte) ([]ObservedEvent, error)
+}
+</code></pre>
+<p><code>ProbeRequest</code>、<code>LaunchRequest</code> 和 <code>ObservedEvent</code> 由实现时的 DTO/JSON schema 定义，字段遵循本章及第 4、10 章。能力中的 <code>false</code> 和“无法探测”要在结果数据中区分，不能把不支持当成暂时没数据。只有通过执行 fixture 的能力才能标记 <code>verified</code>。</p>
+<h3 id="design-h46">9.3 入口差异</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Adapter</th>
+<th>文档确认的无交互形式</th>
+<th>结构化输出</th>
+<th>必须特别验证</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cursor</td>
+<td><code>agent -p</code>，写文件需授权 <code>--force</code></td>
+<td><code>--output-format stream-json</code></td>
+<td>实际写入、登录范围、真实模型和流输出完整性</td>
+</tr>
+<tr>
+<td>Grok Build</td>
+<td><code>grok -p</code>，模型 <code>-m</code></td>
+<td><code>--output-format streaming-json</code></td>
+<td>关闭自动更新、fresh session、审批策略</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td><code>opencode run</code>，模型 <code>provider/model</code></td>
+<td><code>--format json</code></td>
+<td>专用配置、env/.env 继承、事件与用量来源</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些入口来自当前官方文档，但仍需对实际安装版本做 doctor 与 fixture 测试。[W1][W3][W5] 不同格式的枚举值不能复制粘贴为一个统一字符串。</p>
+<p>下列启动样式只用于说明 argv 组装，不是可以在个人主目录随意执行的建议：</p>
+<pre><code class="language-text">Cursor:   agent -p --force --output-format stream-json --model MODEL PROMPT
+Grok:     grok --no-auto-update -p PROMPT --output-format streaming-json -m MODEL
+OpenCode: opencode run --format json --model PROVIDER/MODEL PROMPT
+</code></pre>
+<p>实际工作目录由 Runner 设置。自动批准工具的选项只能在已批准的隔离与权限策略下开启；Grok/OpenCode 需要的批准参数由固定版本适配器验证后加入，不让通用调用层默认附带“允许一切”。长提示词以工具已支持的文件/stdin机制传入，或使用受限长度 argv；未核实支持时不能发明 flag。</p>
+<h3 id="design-h47">9.4 doctor 的内容和报告</h3>
+<p>doctor 依次检查版本、可执行来源、模型配置、授权来源、环境兼容性、可写临时目录、无交互响应、输出解析、最小文件改动、正常退出、取消、子进程清理、可观测 usage，以及配置隔离。涉及付费的 smoke test 必须先显示并获准，静态检查不自动发起付费请求。</p>
+<p>认证状态只能证明可认证，不证明特定模型能调用、额度可共享或费用可控。允许用非敏感小任务做真实调用，并保存 <code>entitlement_verified_by</code>、时间、计费路径和用户确认，不用臆测套餐剩余额度。</p>
+<p>Cursor 官方提供登录/认证路径，Grok 提供本地登录与 API key 路径；本文不保证用户某个套餐的具体权益。[W2][W4] 用户叫作 DeepSeek V4.1 Flash 的配置，只有 provider/model 真实解析通过后才可发布。</p>
+<h3 id="design-h48">9.5 版本漂移与解析失败</h3>
+<p>CLI 版本发生变化时生成新 ProfileVersion 或要求重新 doctor。Grok 文档提供关闭自动更新的选项；其他工具通过固定安装产物/镜像和启动前校验版本控制漂移。[W3]</p>
+<p>未知事件类型保留为原始记录，不直接 panic；关键终止事件无法判读时标记 adapter_protocol_error。CLI 的退出状态、真实文件与独立验收都要保留；不能因缺少“漂亮的完成事件”丢弃已得到的补丁，也不能据此伪造成功。</p>
+<p>默认新会话，不使用 <code>--continue</code>。即使工具支持 resume，也不在 v0.1 做会话恢复。后续恢复行为属于新的 protocol，并记录是否重新发送了模型请求。</p>
+<h3 id="design-h49">9.6 测试 fixture 的最小集合</h3>
+<p>每个适配器都应有真实脱敏事件样本：正常、非零退出、限流、认证失败、输出截断、未知字段、重复终止、usage 缺失、usage 累计快照、运行中取消、包含终端转义、超大行。解析器测试独立于实际账号，避免每次 CI 消耗套餐。</p>
+<h2 id="design-h50">10. 事件、SSE、制品与背压</h2>
+<h3 id="design-h51">10.1 统一事件，但保留来源</h3>
+<pre><code class="language-json">{
+  "schema_version": "agentlab.event/v1",
+  "attempt_id": "attempt-example",
+  "fence": 1,
+  "sequence": 17,
+  "observed_at": "2026-10-04T09:00:00Z",
+  "origin": "agent_observation",
+  "type": "message",
+  "payload": {"text": "示例输出，不是平台验收结论"}
+}
+</code></pre>
+<p><code>origin</code> 至少区分 control、runner、agent_observation、verifier。只有可信 Runner/Control 消息可以驱动状态。Agent 输出即使包含相同 JSON 字段，也只是嵌套文本，不能被提升为 <code>CleanupCompleted</code> 或 <code>VerifiedPass</code>。</p>
+<p>平台分配 attempt_id 和序号，工具的 session ID 另存。时间同时保留 wall-clock 与本进程单调计时推导的阶段 duration；重启前后不能用不同进程的 monotonic 值相减。</p>
+<h3 id="design-h52">10.2 有界存储策略</h3>
+<p>原始输出与规范事件按段追加到文件，索引和 durable watermark 批量持久化。stdout 和 stderr 同时消费，避免单管道阻塞；Reader 有显式行长/帧长上限，不能默认依赖较小 Scanner 上限而遇长 JSON 崩溃。</p>
+<p>默认示例政策可设：单原始帧 1 MiB、内存事件缓冲 8 MiB、每 Attempt 日志 64 MiB、制品 512 MiB、文件数 10,000。它们是可调整的安全起点，不是容量测评结论。超限必须记录截断或 policy failure，不能无限放宽。</p>
+<p>慢浏览器只影响自己的订阅：断开并提示通过游标补读；不让慢消费者阻塞 Agent stdout 导致任务挂死。日志存储写满时进入明确的证据异常，停止继续生成以避免无法记录的付费运行。</p>
+<h3 id="design-h53">10.3 SSE 契约</h3>
+<p><code>GET /api/v1/attempts/{id}/events</code> 支持 <code>Last-Event-ID</code>；SSE id 采用稳定的 <code>attempt_id:sequence</code>。历史读取先回放已保留事件，再切换实时流。若游标落在已删除区间，返回明确 gap/snapshot_required，不假装无缝恢复。</p>
+<p>统一设置 event-stream、禁代理缓冲、按策略 flush、心跳和连接限额。长连接的寿命独立于普通请求超时；Pi/宿主 middleware 不应在写过事件后补 JSON 错误。可使用 Pi 已说明的 stream 机制，或宿主标准 http handler，并以集成测试确定实际行为。[R5]</p>
+<p>v0.1 不做双向终端。取消使用 REST，人工补充指令暂不开放；后续加入时必记 intervention 并改变实验协议。</p>
+<h3 id="design-h54">10.4 制品类型和导出</h3>
+<p>制品包括：输入快照、环境与 CLI 版本、公开任务、脱敏事件、内容清单、diff/改动 blob、检查结果、错误日志、截图/trace、usage 来源和清理记录。隐藏 verifier 与参考解不默认打包给普通结果读取者；管理员也应显式选择是否导出。</p>
+<p>导出包中的 <code>manifest.json</code> 记录 schema version、文件摘要、证据缺失/脱敏/截断标记和创建工具版本。报告与制品相互引用，能够解释结果而不依赖在线界面。无法再次访问模型权重并不影响证据审查，但要区分“结果可审计”和“模型执行可精确重现”。</p>
+<p>HTML、SVG、终端日志和 trace 均按不可信制品处理。默认下载或以严格沙箱展示，不在控制台同源且允许脚本的 iframe 中直接打开。敏感内容脱敏不是完美的 DLP；原始日志默认受限访问并按策略保留。</p>
+<h2 id="design-h55">11. 验证引擎与证据质量</h2>
+<h3 id="design-h56">11.1 可信谁</h3>
+<p>可信控制代码与经用户批准的验收定义负责“需要验证什么”；Runner 负责“在哪个环境运行了什么”；Agent 和候选代码均不负责最终评分。测试框架结果也要根据运行位置和可能的干扰级别解释。</p>
+<p>v0.1 威胁模型是自己的仓库与可能出错的 Agent，附带基本越界/伪造防护；不承诺在对抗性候选代码面前获得数学意义的可信评价。公共陌生任务托管需要额外威胁模型、VM 隔离和专业安全评估。</p>
+<h3 id="design-h57">11.2 检查结果模型</h3>
+<p>每条 CheckResult 保存 check_id、required、baseline_expected、candidate_expected、实际 outcome、exit_code、case_count、缺失/跳过 case ID、duration、执行环境摘要、可信级别和 evidence digest。单独的 advisory warning 不改变 must-pass 条件。</p>
+<p>必须明确 <code>test_failed</code> 与 <code>verifier_failed</code>：候选 API 返回错误断言可判 fail；用于启动浏览器的镜像损坏是验证基础设施错误；编译候选代码产生语法错误是候选失败。无法自动区分的崩溃先 inconclusive，不为了填满排行榜强行归因。</p>
+<h3 id="design-h58">11.3 校准与失效</h3>
+<p>每个正式 Task 至少保存基线的预期结果，以及一个经人工确认的正确补丁通过样本；再用一个明显错误或空补丁测试 verifier 是否误报。v0.3 加入更系统的变异/反例校准，但不为所有任务首版强制构建变异测试平台。</p>
+<p>有 flaky 证据的任务暂从默认比较集中移出，并记录其失效率。不能仅在某个模型失败时重跑验证，成功时不重跑；验收重试政策在实验前统一固定。</p>
+<h3 id="design-h59">11.4 Review 作为独立层</h3>
+<p>v0.4 的 ReviewInput 由受控程序组装：任务要求、diff、相关原文件片段、验收摘要和证据引用。隐藏模型/供应商名称，固定 rubric 与上下文预算，标明哪些证据无法完整放入上下文。</p>
+<p>仓库内提示、注释和日志作为被审查数据而非 Reviewer 指令。Reviewer 不获得合并、发布或查看凭据的工具。它可以给出缺陷、严重度、位置与理由，也可以返回证据不足；不能任意执行代码或修改硬测试结论。</p>
+<p>“实现→Review→一次修复”使用新的 ProtocolVersion，阶段分别计费、分别保存 diff。修复后的 pass 不能回写为 single-pass 的首轮成功。</p>
+<h2 id="design-h60">12. 预算、账号容量与使用量</h2>
+<h3 id="design-h61">12.1 区分三种量</h3>
+<p>第一种是可强制的本地资源限制：并发、运行时间、CPU、内存、进程数量、磁盘。第二种是工具/供应商报告的 token、请求和费用。第三种是订阅余额、服务端隐藏推理和未来计费等不可观测量。</p>
+<p>预算字段必须带 <code>enforcement=hard|best_effort|informational</code>。没有供应商原生硬预算能力时，平台不能承诺“达到 5 美元前一定停止”；日志出现额度值时请求可能已发出，停止本地进程也不保证撤回服务端计费。</p>
+<h3 id="design-h62">12.2 UsageRecord</h3>
+<pre><code class="language-json">{
+  "attempt_id": "attempt-example",
+  "source": "cli_reported",
+  "source_event_id": "provider-session-7:usage-final",
+  "billing_path": "unknown",
+  "input_tokens": null,
+  "output_tokens": null,
+  "cached_input_tokens": null,
+  "cost_microusd": null,
+  "currency": null,
+  "confidence": "unknown",
+  "is_cumulative": true
+}
+</code></pre>
+<p>缺失为 null，不是 0。若 CLI 只报告某些 token，不补造 total；不同供应商的 cache/reasoning token 口径需保留映射说明。累计快照以其计量 scope 下的最后有效值计算，不能把每次累计事件求和；增量事件以来源 ID 去重。</p>
+<p>有精确用量而没有精确价格时，估算另列为 estimated，保存价格来源和日期，不与供应商实际账单覆盖混用。首版可以完全不内置价格表，先保存真实观测和用户手工成本备注。</p>
+<h3 id="design-h63">12.3 调度与额度保护</h3>
+<p>账号维度默认串行，多个 Profile 共享同一 account_id 时共用容量；不能按模型名拆成三个队列绕过同一账号限制。已知限流时遵守可得的 Retry-After；没有明确时限时使用有上限退避并暂停新试验，用户可恢复。</p>
+<p>本平台只控制自己发起的调用，不知道用户同时在 IDE 中使用了多少额度。显示“本平台记录的用量”，不显示“账号全量用量”。不得因为观察不到当前余额而自行创建多个账号或切换计费。</p>
+<p>v0.1 对每 Trial 设置 wall-clock 与产物限额；v0.2 增加实验级调用次数/累计观测预算。实际消费尚未结算的运行保持 pending usage，而不是提前按零释放金额预留。金额不确定时只能限制下一次启动，不能追溯保证过去未超额。</p>
+<h3 id="design-h64">12.4 阶段计时</h3>
+<p>至少分别记录 queue、prepare、agent、collect、verify、cleanup、end_to_end。UI 优先展示 agent 和端到端两个值，其余展开。等待账号、拉镜像或首次构建不能全部算作模型思考时间。</p>
+<p>比较速度时记录执行机器、CPU 配额、并发和冷/热缓存。最初可以按随机/交错顺序安排 Profile 以减少时段偏差；无随机对照时用观察性措辞。</p>
+<h2 id="design-h65">13. 统计口径与可比性</h2>
+<h3 id="design-h66">13.1 两个必须并列的结果</h3>
+<p><strong>首 Attempt 可判定通过率</strong>：某 Profile 在 eligible Trial 的第一次物理执行中，独立验收为 pass 的数量 / 第一次物理执行能判为 pass 或 fail 的数量。必须同时展示分母、eligible 定义和被排除的缺失原因。</p>
+<p><strong>计划交付率</strong>：计划内首 Attempt 取得独立 pass 的 Trial 数 / 该 Profile 原计划 Trial 数。排队未开始、取消、认证失败、基础设施失败均仍可见，并按原因分组。实验未完成时不把临时值称最终排名。</p>
+<p>第一项更接近在可评判条件下的解题表现；第二项反映完整工具链能交付多少。二者都不是普遍模型能力结论。后续人工重试的最好结果另列为 assisted/retried，不参与首 Attempt 分子。</p>
+<h3 id="design-h67">13.2 任务层聚合</h3>
+<p>同一个任务多次运行具有共同难度和相关性。v0.3 先对每个任务计算每 Profile 的重复结果，再对任务做等权 macro-average；不能让某个任务因为重复 20 次而压倒只跑 2 次的其他任务。</p>
+<p>展示按任务配对的结果：两者都过、只有 A 过、只有 B 过、两者都失败、至少一个未判定。不要在双方可评判任务集合不同的情况下，只比较各自最好看的总体百分比。</p>
+<h3 id="design-h68">13.3 区间、样本量与因果措辞</h3>
+<p>正式区间优先在任务层进行配对 cluster bootstrap，抽样单位是任务而不是单次 Trial，并保留随机种子、迭代次数和方法版本。数据不足时只显示原始计数与任务分歧。</p>
+<p>少于 20 个不同任务时默认提示“探索性样本”，是产品的保守提醒阈值，不是统计定理或充分样本保证。即使任务更多，任务选择偏差、私有仓库特殊性和云端模型变更依旧限制外推。</p>
+<p>不把 Wilson/binomial 区间盲目套在相关重复运行上，不输出没有意义的小数点后两位“架构能力”。同一 Agent 对不同模型的比较仍只说明该工具和任务集下的表现。</p>
+<h3 id="design-h69">13.4 成本与质量</h3>
+<p>成本覆盖完整时，可以计算“所有相关运行总成本 / 验收成功数”，包含失败和约定重试的成本；成功数为 0 时显示 undefined/无成功，不显示 0。费用覆盖不完整时显示 coverage 和缺失原因，不将缺失样本补零。</p>
+<p>代码行数、修改文件数、测试数量用于解释工作规模和异常，不作为直接奖励。部分验收项通过可以展示，但不同任务的检查数不同，不能按“通过了多少个测试”跨任务排名。</p>
+<p>总体 UI 默认呈现质量、时间、已知成本和人工介入的并列维度，而不是不透明加权总分。自动推荐至少等到数据能解释相似任务表现后再设计，不纳入 v0.3 的承诺。</p>
+<h2 id="design-h70">14. HTTP API、认证与前后端契约</h2>
+<h3 id="design-h71">14.1 API 风格</h3>
+<p>API 以 <code>/api/v1</code> 为前缀，JSON DTO 与数据库模型分开。使用 OpenAPI 作为前后端合同，生成 TypeScript client；不要求首版建设动态 SDK 平台。时刻使用 UTC RFC3339，duration 使用明确单位，字节数为整数，金额使用整数微单位且携带币种。</p>
+<p>Pi 启用显式 HTTP status 语义或由 transport 明确编码，不依赖 HTTP method 推断响应码。具体 envelope 由 Lab 冻结并测试，而不是让前端猜测框架默认包装结构。[R5]</p>
+<h3 id="design-h72">14.2 核心接口</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法与路径</th>
+<th>作用</th>
+<th>关键语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST /projects</td>
+<td>登记授权项目</td>
+<td>不自动运行仓库脚本</td>
+</tr>
+<tr>
+<td>GET /projects</td>
+<td>项目分页</td>
+<td>cursor、limit 有上限</td>
+</tr>
+<tr>
+<td>POST /projects/{id}/tasks</td>
+<td>创建任务草稿</td>
+<td>返回 201</td>
+</tr>
+<tr>
+<td>PATCH /tasks/{id}</td>
+<td>更新草稿</td>
+<td>If-Match/row_version 防止覆盖</td>
+</tr>
+<tr>
+<td>POST /tasks/{id}/publish</td>
+<td>解析、预检并发布版本</td>
+<td>长操作返回 202；失败不产生可执行版本</td>
+</tr>
+<tr>
+<td>GET /tasks/{id}/versions</td>
+<td>版本与预检状态</td>
+<td>公开字段和敏感验收材料分权限</td>
+</tr>
+<tr>
+<td>POST /profiles</td>
+<td>创建 Profile 草稿</td>
+<td>只允许管理员选择已支持 Adapter</td>
+</tr>
+<tr>
+<td>POST /profiles/{id}/doctor</td>
+<td>静态或已授权的 smoke 检查</td>
+<td>参数显式区分是否允许模型调用</td>
+</tr>
+<tr>
+<td>POST /profiles/{id}/publish</td>
+<td>发布通过检查的版本</td>
+<td>不能发布未解析模型/占位环境</td>
+</tr>
+<tr>
+<td>POST /experiments</td>
+<td>冻结并持久化实验计划</td>
+<td>Idempotency-Key；提交不等于已运行</td>
+</tr>
+<tr>
+<td>GET /experiments/{id}</td>
+<td>计划、Trial 与汇总</td>
+<td>汇总明确未完成样本</td>
+</tr>
+<tr>
+<td>POST /trials/{id}/cancel</td>
+<td>记录取消意图</td>
+<td>202；不是已经杀死进程</td>
+</tr>
+<tr>
+<td>POST /trials/{id}/attempts</td>
+<td>人工重试</td>
+<td>必须有 reason；新 Attempt，旧结果保留</td>
+</tr>
+<tr>
+<td>GET /trials/{id}</td>
+<td>当前状态及历史 Attempt</td>
+<td>未清理容量状态可见</td>
+</tr>
+<tr>
+<td>GET /attempts/{id}/events</td>
+<td>SSE</td>
+<td>Last-Event-ID 与 gap 语义</td>
+</tr>
+<tr>
+<td>GET /attempts/{id}/checks</td>
+<td>独立验收证据</td>
+<td>不执行新的测试</td>
+</tr>
+<tr>
+<td>GET /attempts/{id}/artifacts</td>
+<td>产物列表</td>
+<td>摘要、大小、缺失标记</td>
+</tr>
+<tr>
+<td>GET /artifacts/{id}/download</td>
+<td>下载受控制品</td>
+<td>只按 ID，不接受任意文件路径</td>
+</tr>
+<tr>
+<td>POST /experiments/{id}/export</td>
+<td>生成报告包</td>
+<td>导出任务单独限额；默认不含凭据/参考解</td>
+</tr>
+<tr>
+<td>GET /comparisons</td>
+<td>兼容条件下的比较</td>
+<td>v0.2 基础表；v0.3 完整统计</td>
+</tr>
+</tbody>
+</table></div>
+<p>环境和账号配置可在 Settings API 中用同样的草稿/发布模式管理，不必为每个字段设计单独 endpoint。v0.1 可以只读本地管理员配置文件中的账号引用，避免直接建设复杂凭据管理 UI。</p>
+<h3 id="design-h73">14.3 异步提交示例</h3>
+<pre><code class="language-http">POST /api/v1/experiments
+Idempotency-Key: local-study-001
+Content-Type: application/json
+
+{
+  "mode": "agent_profile",
+  "task_version_ids": ["task-version-registered"],
+  "profile_version_ids": ["profile-version-registered"],
+  "repetitions": 1,
+  "protocol": "single-pass-v1"
+}
+</code></pre>
+<p>这些是示例 ID，实际请求必须引用已登记的不可变版本。成功响应建议为：</p>
+<pre><code class="language-json">{
+  "data": {"id": "experiment-created", "state": "queued", "trial_count": 1},
+  "request_id": "request-created"
+}
+</code></pre>
+<p>202 只在计划及 Trial 事务提交后返回。相同主体、操作和 Idempotency-Key 使用相同 payload 时返回原资源；payload 摘要不同返回 409。连接在提交后断开时，客户端可以使用同 key 恢复，不新增付费运行。</p>
+<h3 id="design-h74">14.4 错误分类</h3>
+<p>400 为格式错误，401 未认证，403 未授权，404 资源不存在或按策略隐藏，409 状态/版本/幂等冲突，422 配置不可执行，429 本平台容量/请求频率限制，503 无法安全持久化或正在停止。</p>
+<p>Provider 的限流是运行域事件，不应机械映射为最初 POST 的 HTTP 500。对客户端返回稳定的 <code>error.code</code>、公开 message、可公开 details 和 request_id；凭据、原始命令环境和内部 SQL 不进入响应。</p>
+<h3 id="design-h75">14.5 本机也需要认证</h3>
+<p>loopback 不等于没有浏览器跨站风险。首次启动使用一次性初始化流程创建管理员；后续采用受保护会话或本地 API token。Cookie 使用 HttpOnly、SameSite，远程 HTTPS 才设置符合部署的 Secure 策略；写请求有 CSRF 防护。</p>
+<p>校验 Host/Origin，默认关闭 CORS，限制可信代理，防止恶意网页通过本机 API 启动命令。不可把长期 token 放 URL 查询参数。SSE 使用同源会话，不通过可泄露的查询字符串携带密钥。</p>
+<p>登录后仍进行资源级授权。Pi 身份只能从已校验的登录态映射，不能从请求 <code>user_id</code> 建立 Principal；服务方法保持明确授权边界。[R5] 即使首版单用户，也要测试未登录不能执行和读日志。</p>
+<h2 id="design-h76">15. 前端设计与实现约束</h2>
+<p>采用 React、TypeScript、Vite 与一个统一组件体系；路由、服务端状态缓存和表格组件选择团队熟悉的稳定组合并锁版本，不在本文指定“最新版”。这是本项目的工程选择，不是声称某套 UI 栈性能最强。</p>
+<p>页面按产品文档第 9 章实现。前端不重算权威 Verdict，不根据日志关键词切换为成功；汇总由后端返回明确口径，客户端只做展示和交互。</p>
+<p>长日志列表虚拟滚动，按页加载历史；Diff 支持文件级分段和二进制占位；超大文件只显示摘要并提供受限下载。编辑器只用于任务/配置草稿和只读 diff，首版不提供能修改运行中工作区的完整 IDE。</p>
+<p>创建实验表单先调用本地计算/后端预览，明确 Trial 展开数与权限；真正执行仍以一次事务的 POST 为准，不能在每切换一个模型选项时提前启动。</p>
+<p>界面上固定展示四种结果状态，不单靠颜色表达。空数据、权限失败、来源未知、日志截断、配额阻塞、清理隔离和模型解析不一致都有明确文案。Fixture 不包含假装真实的模型分数；演示数据统一标注 demo。</p>
+<h2 id="design-h77">16. 测试计划与发布门槛</h2>
+<h3 id="design-h78">16.1 必须自动化的测试</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>场景</th>
+<th>预期</th>
+<th>对应需求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T-01</td>
+<td>发布后修改任务</td>
+<td>产生新版本；旧计划不变</td>
+<td>FR-02</td>
+</tr>
+<tr>
+<td>T-02</td>
+<td>baseline 不符合预期</td>
+<td>不启动 Agent</td>
+<td>FR-03</td>
+</tr>
+<tr>
+<td>T-03</td>
+<td>正确/错误/空补丁</td>
+<td>分别通过、失败、按预期失败</td>
+<td>FR-03/05</td>
+</tr>
+<tr>
+<td>T-04</td>
+<td>Agent 输出伪造 PASS/Finished</td>
+<td>仅记文本，不改变结论或容量</td>
+<td>FR-09/15</td>
+</tr>
+<tr>
+<td>T-05</td>
+<td>测试数为 0 / 跳过必须项</td>
+<td>不得 pass</td>
+<td>FR-03</td>
+</tr>
+<tr>
+<td>T-06</td>
+<td>新增未跟踪和二进制文件</td>
+<td>收集或明确拒绝，不静默丢失</td>
+<td>FR-09</td>
+</tr>
+<tr>
+<td>T-07</td>
+<td>symlink/路径穿越/特殊文件</td>
+<td>不越界读取写入</td>
+<td>FR-15</td>
+</tr>
+<tr>
+<td>T-08</td>
+<td>同 key 重复提交</td>
+<td>一个计划、一组 Trial</td>
+<td>FR-06</td>
+</tr>
+<tr>
+<td>T-09</td>
+<td>同 key 不同 body</td>
+<td>409，不执行新计划</td>
+<td>FR-06</td>
+</tr>
+<tr>
+<td>T-10</td>
+<td>排队中取消</td>
+<td>不启动 Runner</td>
+<td>FR-08</td>
+</tr>
+<tr>
+<td>T-11</td>
+<td>运行中取消且 CLI 派生子进程</td>
+<td>进程树停止后才确认清理</td>
+<td>FR-08</td>
+</tr>
+<tr>
+<td>T-12</td>
+<td>创建 Attempt 后控制面崩溃</td>
+<td>恢复可解释，不盲目二次调用</td>
+<td>FR-08</td>
+</tr>
+<tr>
+<td>T-13</td>
+<td>Agent 已调用而最终事件丢失</td>
+<td>不自动当作从未执行</td>
+<td>FR-08/11</td>
+</tr>
+<tr>
+<td>T-14</td>
+<td>旧 fence 回报结果</td>
+<td>拒绝覆盖；留审计</td>
+<td>FR-08</td>
+</tr>
+<tr>
+<td>T-15</td>
+<td>同账号多个 Profile</td>
+<td>共用并发上限</td>
+<td>FR-06</td>
+</tr>
+<tr>
+<td>T-16</td>
+<td>清理失败</td>
+<td>隔离并保留容量</td>
+<td>FR-08</td>
+</tr>
+<tr>
+<td>T-17</td>
+<td>超长行、输出风暴、慢浏览器</td>
+<td>有界内存，任务不因 UI 卡住</td>
+<td>FR-07</td>
+</tr>
+<tr>
+<td>T-18</td>
+<td>SSE 重连与历史删除</td>
+<td>正确补读或明确 gap</td>
+<td>FR-07</td>
+</tr>
+<tr>
+<td>T-19</td>
+<td>磁盘满、制品引用缺失</td>
+<td>不误报完整证据</td>
+<td>FR-09/14</td>
+</tr>
+<tr>
+<td>T-20</td>
+<td>usage 缺失/重复/累计</td>
+<td>null 不变零；不重复累计</td>
+<td>FR-11</td>
+</tr>
+<tr>
+<td>T-21</td>
+<td>CLI 版本或模型解析变化</td>
+<td>要求重检或标不可比</td>
+<td>FR-04/12</td>
+</tr>
+<tr>
+<td>T-22</td>
+<td>认证失效/配额不足</td>
+<td>账号阻塞，不判能力失败</td>
+<td>FR-11/16</td>
+</tr>
+<tr>
+<td>T-23</td>
+<td>未登录、伪造 Origin/Host</td>
+<td>不能启动任务或读敏感日志</td>
+<td>FR-15</td>
+</tr>
+<tr>
+<td>T-24</td>
+<td>恶意 HTML/终端转义日志</td>
+<td>不在控制台执行脚本</td>
+<td>FR-15</td>
+</tr>
+<tr>
+<td>T-25</td>
+<td>两 Profile 任务集合不同</td>
+<td>不静默合榜</td>
+<td>FR-12</td>
+</tr>
+<tr>
+<td>T-26</td>
+<td>人工重试/修复后成功</td>
+<td>不污染首 Attempt 指标</td>
+<td>FR-13/18</td>
+</tr>
+<tr>
+<td>T-27</td>
+<td>主库热备份与恢复</td>
+<td>数据和制品清单一致可解释</td>
+<td>FR-14</td>
+</tr>
+<tr>
+<td>T-28</td>
+<td>多次启动/停止/部分启动失败</td>
+<td>Pi 与宿主资源只启动关闭一次</td>
+<td>FR-08/15</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="design-h79">16.2 测试层级</h3>
+<p>纯单元测试覆盖状态机、授权、幂等、版本摘要、usage 与指标；假 CLI 覆盖进程退出、子进程、日志和取消；SQLite 集成测试使用真实临时库；容器测试验证挂载、网络声明、资源上限与回收；真实工具 smoke test 单独手工授权，不默认进入普通 CI。</p>
+<p>前端使用 API fixture 与 Playwright 检查创建、查看、取消、导出，不以截图相似代替业务断言。所有命令与代码样式以锁定版本实际编译结果为准。</p>
+<p>至少在一次发布前对受支持平台做反复取消/重启压力测试，并保存进程/容器清理证据。测试发现无法确认的运行，应验证 quarantine 生效，而不是强行要求所有未知情况都自动恢复成功。</p>
+<h3 id="design-h80">16.3 发布测试的诚实输出</h3>
+<p>发布报告列出执行过的平台、CLI 版本、认证模式和测试类别。单元测试通过不代表真实订阅登录通过；Docker 测试通过不代表 native Mac 的进程组实现通过。矩阵空白表示未测，不填绿色。</p>
+<h2 id="design-h81">17. 运维、备份、保留与观测</h2>
+<p>控制日志与 Agent 日志分开。控制日志记录 request_id、experiment/trial/attempt、阶段和错误类型，默认不打印 prompt、源码、完整 env 或凭据。指标按类型聚合，避免把每个 run ID 作为高基数 metric label。</p>
+<p>优先指标：queued/active/quarantined 数、账号阻塞、准备/执行/验证耗时、取消到 clean 耗时、丢失/截断事件、SQLite busy、制品增长和未知 usage 比例。不要把业务日志全部送入外部服务，默认保持本地。</p>
+<p>备份使用经验证的 SQLite 一致性快照流程；不能在 WAL 模式下随意只复制主数据库文件。v0.1 可采用维护模式：停止新调度，结束或确认活跃任务，关闭/一致性导出数据库，再按引用清单备份不可变制品。更平滑的在线备份后续增加，须实测驱动能力。[W8]</p>
+<p>升级前备份，迁移在单实例锁下进行。首版不承诺任意 down migration；不兼容时保留旧程序与备份以回退。Profile 依赖的 CLI 版本与系统升级分开，禁止服务升级顺手执行所有工具的自动更新。</p>
+<p>保留策略按原始日志、规范事件、工作区、改动包和报告分别管理。默认清理临时工作区，不自动删除被报告引用的核心补丁和检查摘要。磁盘水位超过阈值先阻止新任务，再按明确规则清理未引用临时文件；未知 orphan 先隔离，不能全盘 <code>rm -rf</code>。</p>
+<h2 id="design-h82">18. 实施顺序、ADR 与未决验证</h2>
+<h3 id="design-h83">18.1 核心实现顺序</h3>
+<p>v0.0 先验证 Pi 组装/SQLite/一个真实 CLI 的最小闭环，不做完整管理页。v0.1 按状态机与假 Runner→工作区→真实 Adapter→Verifier→API/UI 的顺序推进。v0.2 才扩三个适配入口和并发；v0.3 再做重复与统计；v0.4 Review；v0.5 互操作。</p>
+<p>详细工单见《实施任务包》。每个工单限定文件范围、输入输出、负例和测试命令；不能让实现 Agent 同时修改协议、评分口径和验收器以让自己的代码通过。</p>
+<h3 id="design-h84">18.2 决策记录索引</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ADR</th>
+<th>决策</th>
+<th>重新讨论的触发条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ADR-001</td>
+<td>Go/Pi 控制面与 Go Runner</td>
+<td>实测出现独立性能热点，或产品目标改成验证 Pipi</td>
+</tr>
+<tr>
+<td>ADR-002</td>
+<td>模块化单体、单控制实例</td>
+<td>明确出现多执行主机/多操作者需求</td>
+</tr>
+<tr>
+<td>ADR-003</td>
+<td>SQLite + 本地不可变制品</td>
+<td>本地持久化成为实测瓶颈或需共享控制面</td>
+</tr>
+<tr>
+<td>ADR-004</td>
+<td>固定 CLI 适配器，不自研 Agent</td>
+<td>现有工具无法表达必须能力且有明确验证收益</td>
+</tr>
+<tr>
+<td>ADR-005</td>
+<td>Trial/Attempt 分离，默认无自动重跑</td>
+<td>具备可证明未调用 Provider 的安全重试场景</td>
+</tr>
+<tr>
+<td>ADR-006</td>
+<td>基线重建与独立验收</td>
+<td>不可削弱；只增加更强黑盒验证</td>
+</tr>
+<tr>
+<td>ADR-007</td>
+<td>配置对比与模型对比分开</td>
+<td>不合并语义，只扩展明确实验类型</td>
+</tr>
+<tr>
+<td>ADR-008</td>
+<td>费用未知保留 unknown</td>
+<td>获得可验证的官方实际用量/计费接口</td>
+</tr>
+<tr>
+<td>ADR-009</td>
+<td>Review 不覆盖硬结果</td>
+<td>不改变；允许新版本重新验收</td>
+</tr>
+<tr>
+<td>ADR-010</td>
+<td>无自动 merge/deploy</td>
+<td>用户另行要求，单独权限与安全设计</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="design-h85">18.3 开工前必须验证但不阻断文档的事项</h3>
+<p>第一，Pi 当前固定提交在拟用 Go 工具链上的构建与测试，宿主 HTTPHandler/资源关闭/SSE 的实际行为。第二，用户实际安装的三个 CLI 版本、登录模式和 DeepSeek 的真实 provider/model。第三，Intel Mac/Docker 与 Linux 执行环境的认证和取消兼容性。第四，SQLite driver 的 PRAGMA、备份与断电行为。第五，模型端实际可观测 usage 与预算支持。</p>
+<p>这些不确定性有明确的 v0.0 实验，不要求先把整个框架升级重写。失败就缩小已认证兼容矩阵，而不是编造“全部已支持”。</p>
+<h3 id="design-h86">18.4 为什么不直接包一层 Harbor 就结束</h3>
+<p>Harbor 已有任务结构和独立验证能力，值得后续互操作；但本项目第一目标是你的实际 CLI/账号接入、个人项目流程、预算可观测性、差异审查和本地使用体验，不是单纯运行某个公开榜单。[W10][W12]</p>
+<p>因此只自建必须的个人闭环，不自建大型通用 benchmark 集群。首版保留 task/prompt/environment/verifier/artifact 概念的映射空间；v0.5 可作为外部 executor 导入 Harbor 结果或任务子集。格式兼容必须报告未映射字段与不同隔离假设，不能仅修改文件名就声称兼容。</p>
+<h2 id="design-h87">19. 资料、证据与查阅限制</h2>
+<h3 id="design-h88">19.1 用户仓库证据（固定提交）</h3>
+<p>以下均通过 GitHub 连接读取。时间以仓库返回信息为准，查阅日期为 2026-10-04。</p>
+<ul>
+<li>[R1] Pi 默认分支提交：<a href="https://github.com/sllt/pi/commit/4c292d04b898d95862ea74e17be7adb115a4ad54" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pi/commit/4c292d04b898d95862ea74e17be7adb115a4ad54</a></li>
+<li>[R2] Pipi 默认分支提交：<a href="https://github.com/sllt/pipi/commit/c265309bf909bf8f4737dfebc543762b11edf561" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pipi/commit/c265309bf909bf8f4737dfebc543762b11edf561</a></li>
+<li>[R3] Pi <code>pkg/pi/build.go</code>，已读 1—260 行：<a href="https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/pkg/pi/build.go" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/pkg/pi/build.go</a></li>
+<li>[R4] Pi <code>pkg/pi/lifecycle.go</code>：<a href="https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/pkg/pi/lifecycle.go" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/pkg/pi/lifecycle.go</a></li>
+<li>[R5] Pi README 的 v0.4.1/Build/HTTP 等契约：<a href="https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/README.md" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/README.md</a></li>
+<li>[R6] Pi <code>pkg/pi/build_test.go</code>，已读 1—200 行：<a href="https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/pkg/pi/build_test.go" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/pkg/pi/build_test.go</a></li>
+<li>[R7] Pipi <code>Cargo.toml</code>，已读 1—220 行：<a href="https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/Cargo.toml" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/Cargo.toml</a></li>
+<li>[R8] Pipi <code>src/app.rs</code>，已读 1—570 行：<a href="https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/src/app.rs" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/src/app.rs</a></li>
+<li>[R9] Pipi <code>src/bgworker/mod.rs</code>，已读 1—280 行：<a href="https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/src/bgworker/mod.rs" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/src/bgworker/mod.rs</a></li>
+<li>[R10] Pipi <code>src/bgworker/sqlt.rs</code>，已读 1—240 行：<a href="https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/src/bgworker/sqlt.rs" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pipi/blob/c265309bf909bf8f4737dfebc543762b11edf561/src/bgworker/sqlt.rs</a></li>
+<li>[R11] Pi <code>go.mod</code>：<a href="https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/go.mod" rel="noopener noreferrer" target="_blank">https://github.com/sllt/pi/blob/4c292d04b898d95862ea74e17be7adb115a4ad54/go.mod</a></li>
+</ul>
+<p>本次未执行两个仓库的构建/测试、没有性能对照，也没有完整安全审计。源码中有测试与本次测试通过是不同事实。Pipi 的局部行为描述严格限定于已读代码范围，不把旧对话中的问题当作当前仍存在的完整清单。</p>
+<h3 id="design-h89">19.2 外部一手资料</h3>
+<ul>
+<li>[W1] Cursor Headless CLI：<a href="https://cursor.com/docs/cli/headless" rel="noopener noreferrer" target="_blank">https://cursor.com/docs/cli/headless</a></li>
+<li>[W2] Cursor CLI Authentication：<a href="https://cursor.com/docs/cli/reference/authentication" rel="noopener noreferrer" target="_blank">https://cursor.com/docs/cli/reference/authentication</a></li>
+<li>[W3] Grok Build Headless &amp; Scripting：<a href="https://docs.x.ai/build/cli/headless-scripting" rel="noopener noreferrer" target="_blank">https://docs.x.ai/build/cli/headless-scripting</a></li>
+<li>[W4] Grok Build Overview：<a href="https://docs.x.ai/build/overview" rel="noopener noreferrer" target="_blank">https://docs.x.ai/build/overview</a></li>
+<li>[W5] OpenCode CLI：<a href="https://opencode.ai/docs/cli/" rel="noopener noreferrer" target="_blank">https://opencode.ai/docs/cli/</a></li>
+<li>[W6] Git worktree：<a href="https://git-scm.com/docs/git-worktree" rel="noopener noreferrer" target="_blank">https://git-scm.com/docs/git-worktree</a></li>
+<li>[W7] Go os/exec：<a href="https://pkg.go.dev/os/exec" rel="noopener noreferrer" target="_blank">https://pkg.go.dev/os/exec</a></li>
+<li>[W8] SQLite WAL：<a href="https://www.sqlite.org/wal.html" rel="noopener noreferrer" target="_blank">https://www.sqlite.org/wal.html</a></li>
+<li>[W9] Playwright snapshot testing：<a href="https://playwright.dev/docs/test-snapshots" rel="noopener noreferrer" target="_blank">https://playwright.dev/docs/test-snapshots</a></li>
+<li>[W10] Harbor Separate verifier：<a href="https://docs.harborframework.com/tasks/separate-verifier" rel="noopener noreferrer" target="_blank">https://docs.harborframework.com/tasks/separate-verifier</a></li>
+<li>[W11] Docker Engine security：<a href="https://docs.docker.com/engine/security/" rel="noopener noreferrer" target="_blank">https://docs.docker.com/engine/security/</a></li>
+<li>[W12] Harbor Task format：<a href="https://docs.harborframework.com/tasks/overview" rel="noopener noreferrer" target="_blank">https://docs.harborframework.com/tasks/overview</a></li>
+</ul>
+<p>外部 CLI 与服务可能继续变更。实现应以固定版本和实际 doctor 结果为准，不能把“2026-10-04 文档存在的选项”当作所有历史或未来版本都支持。</p>
+<h2 id="design-h90">20. 开发交付检查清单</h2>
+<p>评审时先检查：任务与验收是否冻结；执行是否在独立环境；是否真能清理所有子进程；失联是否会重复调用；unknown 是否被错误变成零；Agent 文本是否被当成可信控制事件；统计是否把重试成功当首次成功。</p>
+<p>然后检查：Pi 依赖是否仅在边界；SQL 与文件所有权是否唯一；API 与前端是否共享合同；CLI 版本是否锁定；隐藏验证是否意外暴露；非认证平台是否被标成支持；模型能力结论是否有对应任务和证据。</p>
+<p>最后才检查：页面细节、图表种类、适配器数量、自动化程度和后续路由。<strong>第一版正确地解释十次真实运行，比不可信地展示一万次漂亮分数更有价值。</strong></p>
+</article><article id="doc-tasks" class="document"><h1 id="tasks-h1">Coding Agent Lab · 实施任务包</h1>
+<p><strong>用途：把产品与技术设计拆成能够单独 Review 的工单。</strong><br/>
+基线：2026-10-04。先读 <a href="01-%E4%BA%A7%E5%93%81%E9%9C%80%E6%B1%82%E6%96%87%E6%A1%A3.md">产品需求文档</a> 第 1、3、12 章，再读 <a href="02-%E6%8A%80%E6%9C%AF%E8%AE%BE%E8%AE%A1%E6%96%87%E6%A1%A3.md">技术设计文档</a> 第 2—7 章。本文不是要一次完成所有版本。</p>
+<h2 id="tasks-h2">1. 执行规则</h2>
+<p>先确定契约与负例，再写实现。一个工单只有一个负责人；同一时刻不要让多个 Agent 随意修改 schema、状态机、公共 DTO 或数据库迁移。并行适合发生在边界固定之后，如独立适配器、页面、已确定契约的测试。</p>
+<p>工程判断不能由模型修改测试口径来绕过。出现文档冲突时记录 ADR/问题，不自行放宽安全限制，也不为了通过 CI 删除检查。实现者可以补测试，但不能单方面更改已批准的验收预期。</p>
+<p>建议主控负责跨模块 Review 和合并，执行 Agent 负责有限改动；独立 Reviewer 检查事实与负例。这里没有根据特定模型名称预设能力排行，分工应按实际结果调整。</p>
+<h2 id="tasks-h3">2. v0.0：先验证四个真实前提</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>工单</th>
+<th>产物</th>
+<th>验收</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B00 · Pi 版本验证</td>
+<td>固定依赖版本、最小服务、构建记录</td>
+<td>当前提交可构建；HTTPHandler、资源 Start/Stop、SSE 不依赖虚构 API</td>
+</tr>
+<tr>
+<td>B01 · 存储验证</td>
+<td>SQLite 临时库、迁移与事务测试</td>
+<td>PRAGMA 每连接生效；短事务/CAS；关闭后能恢复已确认状态</td>
+</tr>
+<tr>
+<td>B02 · 账号与 CLI 验证</td>
+<td>doctor 报告、脱敏真实事件 fixture</td>
+<td>用户授权的小任务确实改文件；知道走哪条授权/计费路径；模型 ID 可用</td>
+</tr>
+<tr>
+<td>B03 · 执行环境验证</td>
+<td>假 CLI、取消与清理测试</td>
+<td>子进程会派生孙进程；取消/父进程崩溃均可清理或明确 quarantine</td>
+</tr>
+</tbody>
+</table></div>
+<p>B02 只选择当前最容易合法跑通的一个入口，不强制先 Cursor。没有用户允许时只做静态探测，不使用真实模型调用来试错。</p>
+<p><strong>进入 v0.1 的条件：B00—B03 有实际记录。</strong> 若某个平台失败，缩小兼容范围；不阻塞于同时认证所有操作系统和工具。</p>
+<h2 id="tasks-h4">3. v0.1：单次可信闭环</h2>
+<h3 id="tasks-h5">M01 · 领域契约与状态机</h3>
+<p>范围：<code>internal/domain</code>、契约测试、必要 ADR。定义 TaskVersion、ProfileVersion、Experiment、Trial、Attempt、Verdict、CleanupState；实现纯函数状态转换与比较指纹。</p>
+<p>必须测试非法转换、取消与终结竞争、旧 Attempt 回报、已发布版本不可变。暂不写数据库和 CLI。完成后将字段冻结为 DTO/schema，后续 Agent 不随意改名。</p>
+<h3 id="tasks-h6">M02 · SQLite Store 与幂等提交</h3>
+<p>依赖 M01。实现 schema/migrations、Task/Profile 版本保存、单 Trial Experiment、幂等提交和容量占用事务。只支持 SQLite，不预先做多数据库抽象工厂。</p>
+<p>必须测试相同请求重复提交只出现一组 Trial、同 key 不同 body 冲突、终态和取消的 CAS、失败事务无半个计划。写数据库的唯一进程是控制面。</p>
+<h3 id="tasks-h7">M03 · Runner 协议与假 Agent</h3>
+<p>依赖 M01。实现同一可执行文件的 Runner 子命令、受限私有 IPC、按 Attempt 的事件序号和能力凭证、stdout/stderr 独立捕获、超时和取消。</p>
+<p>假 Agent 应可模拟成功、失败、挂起、派生子进程、重复终结、超大输出、伪造平台事件。不得让假 Agent 的 <code>{"type":"Finished"}</code> 直接控制任务状态。使用假 Agent 完成恢复测试后再接真实账号。</p>
+<h3 id="tasks-h8">M04 · 独立工作区与改动包</h3>
+<p>实现授权源的固定基线、独立副本、文件清单、收集/应用改动包与 diff 导出。首版明确处理普通文件、二进制和删除，拒绝不支持的 symlink/submodule，而不是留下不确定行为。</p>
+<p>必须测试未跟踪新文件、修改 <code>.git/index</code>、路径穿越、超大文件、隐藏材料和源仓库不被修改。输出摘要应在干净基线重建后可再次验证。</p>
+<h3 id="tasks-h9">M05 · 一种执行环境 + 一种真实 Adapter</h3>
+<p>依赖 B02/B03/M03/M04。优先认证 Docker 路径，只接一个真实 CLI。建立净化的环境、明确的认证引用、固定版本 argv、事件解析与实际模型记录。</p>
+<p>未经用户批准不使用自动放开权限的参数。尚不支持的网络限制写成不支持，不能只加一个 enum 就显示“已沙箱化”。出现输出解析变化保留原始记录，不默认成功。</p>
+<h3 id="tasks-h10">M06 · Verifier 与任务校准</h3>
+<p>依赖 M04/M05。实现基线预检、独立候选环境、build/regression/acceptance/policy 检查、数量/ID 约束和证据文件。先用两个维护过的示范任务证明正确补丁通过、错误/空补丁失败。</p>
+<p>测试脚本异常与候选测试失败分开；隐藏材料仅在验证端出现；记录 inprocess/blackbox 可信度。不能以 Agent stdout 的测试摘要为权威结果。</p>
+<h3 id="tasks-h11">M07 · 生命周期整合和恢复</h3>
+<p>依赖 M02—M06。将固定 scheduler/supervisor 循环接入 Pi；启动/关闭职责唯一；单 Trial 默认无自动重跑。实现 journal 恢复、身份核对、quarantine 和账号容量释放条件。</p>
+<p>重点测试：取消返回 202 后并非立即 clean；旧 fence 不覆盖新结果；控制面重启不重复发起付费任务；单次模型失败不关闭整个 Pi 应用。</p>
+<h3 id="tasks-h12">M08 · API、安全和实时数据</h3>
+<p>在 M01 契约基础上实现技术文档第 14 章的首版 API 子集，加入登录、资源授权、Host/Origin/CSRF、幂等请求、分页、SSE 重放和错误映射。</p>
+<p>允许并行于部分 Runner 开发，但只能使用固定 DTO 和假数据 fixture。不要先把“任意 shell 命令执行接口”暴露出来再补认证。</p>
+<h3 id="tasks-h13">M09 · 最小 Web 交互</h3>
+<p>依赖 M08 契约。只做 Setup/配置检查、项目任务、单次提交、运行详情、差异/检查/日志与导出入口。不做排行榜、无限画布、终端 IDE 或模型聊天窗口。</p>
+<p>页面展示真实 execution/verdict/cleanup 三组状态。unknown 金额显示未知；无结果显示空状态，不填演示分数。演示截图必须带 demo 标记。</p>
+<h3 id="tasks-h14">M10 · 使用量、制品与发布回归</h3>
+<p>补齐 nullable usage、累计去重、时间分解、日志上限、制品 manifest、维护模式备份与导出。运行技术文档的 v0.1 测试集，生成平台/CLI/认证模式兼容矩阵。</p>
+<p>交付条件不是“单元测试全绿”，而是有一次真实 CLI 的执行—独立验收—取消/恢复—导出完整记录。用量不可得可以发布，但必须显示未知；清理不可控或误报 pass 不可发布。</p>
+<h2 id="tasks-h15">4. v0.2：可并行但不同时改核心协议</h2>
+<p>在 v0.1 稳定后，可并行安排三个工作包：补齐剩余两个适配器；实现有界全局并发与账号容量；实现矩阵与基础对比页面。适配器共享固定 contract，但各自拥有真实脱敏 fixture。</p>
+<p>矩阵展开、容量、重试和 usage 的集成最终由主控统一 Review。至少用两个真实项目检查结果可解释性；缺少数据不生成模型强弱结论。</p>
+<h2 id="tasks-h16">5. v0.3 以后的工单</h2>
+<p>v0.3：受控模型模式、可比性判定、重复实验、按任务配对/聚合、统计方法版本化、flaky 校准。</p>
+<p>v0.4：人工 Review、可选盲评、一次修复的独立 protocol。先能解释单阶段结果，再做多阶段。</p>
+<p>v0.5：Harbor 子集、外部签名触发/通知。ACP/ATIF/Herdr 分别立项，不与产品核心捆绑同时交付。</p>
+<p>v1.0：安装升级、备份恢复、兼容矩阵和安全回归。不要为了“1.0 像大产品”临时塞入组织权限、计费、插件商店或公共榜单。</p>
+<h2 id="tasks-h17">6. 工单提交模板</h2>
+<pre><code class="language-text">目标：
+  完成一个明确用例，不承担整个版本。
+
+允许修改范围：
+  列出 package / 文件；核心 schema 变更必须先提出。
+
+输入与输出合同：
+  引用固定 DTO、状态表、API 或协议版本。
+
+必须保持的不变量：
+  例如：旧 Attempt 不覆盖新结果；未知费用不变成零。
+
+必须验证的正例与负例：
+  至少一个成功场景、一个失败场景和一个边界场景。
+
+交付：
+  代码、测试、执行命令及结果、未验证项、迁移/兼容影响。
+
+禁止事项：
+  不改变验收要求以迎合实现；不自动调用真实付费 API；
+  不自动推送/合并/部署；不以日志文字作为平台控制事件。
+</code></pre>
+<h2 id="tasks-h18">7. 给主开发 Agent 的启动提示词</h2>
+<pre><code class="language-text">你要实现 Coding Agent Lab。先阅读 01-产品需求文档.md、02-技术设计文档.md
+与 03-实施任务包.md，严格区分产品路线和当前工单。
+
+当前先做 v0.0 中 B00、B01 的最小验证；B02 涉及付费调用必须经用户许可。
+后端采用 Go 与 sllt/pi，Pi 锁定到设计文档说明的已查阅提交或经验证的对应版本。
+不要改写 Pi 框架，不要创建 Rust 服务，不要自研 Agent，不引入 Redis 或通用工作流。
+
+先核对实际框架 API 和已有仓库结构，列出本次改动与验收项，然后实现。
+状态、协议、预算和权限相关未知点必须显式报告，不编造框架方法或模型 ID。
+每个阶段提交可 Review 的小改动并附实际测试结果；没有执行的测试写未执行。
+不要一次性生成整个平台，也不要为了通过测试降低验收标准。
+</code></pre>
+<p>若工程已有代码，先检查当前实现再接续；不要用本提示词把已经完成的版本覆盖重建。</p>
+</article><article id="doc-examples" class="document"><h1 id="examples-h1">配置草稿说明</h1>
+<p>这里的三个 YAML 是<strong>产品合同示例，不是已经开发完成的 CLI 配置</strong>。它们可供创建 DTO、表单和发布校验器时使用。</p>
+<p><code>task-draft.yaml</code> 描述一个假定存在的订单 API 任务，不来自对任何用户业务仓库的实际审查。<code>profile-draft.yaml</code> 特意保留 REPLACE_ 字段，避免伪造模型 ID、认证路径和 CLI 版本。<code>experiment-draft.yaml</code> 展开为 1 个任务 × 3 个配置 × 1 次 = 3 个 Trial，面向 v0.2。</p>
+<p>任务与参与对比的 Profile 在该示例中使用同一个已准备、含固定版本 CLI 的环境。不得把不同工具链镜像悄悄视为同一环境。</p>
+<p>发布过程必须验证所有引用确实存在、doctor 有效、账号和环境已授权、时间和字节限制为正，再将分支/镜像/配置转换为不可变快照。任何 REPLACE_ 字段都应阻止发布。</p>
+<p>YAML 只是输入。最终执行快照采用规范 JSON，保存真实 commit、内容摘要、CLI/模型来源、verifier 摘要、执行协议与环境。不要把含 master 的草稿直接当作可复现实验。</p>
+<p>网络策略引用不是沙箱实现。没有实际强制出口措施，不能把 <code>network_policy_ref</code> 填成某个名称就显示网络已受限。类似地，<code>account_ref</code> 与 <code>credential_ref</code> 不包含真实密钥，运行时只由授权控制端解析。</p>
+<p>这些示例已做语法检查；尚不存在本项目实现可用于验证它们的端到端执行。</p>
+</article><article class="document" id="examples-yaml"><h2>配置草稿原文</h2><p>这些是输入合同示例，不是已实现产品的运行配置。占位字段与未登记引用必须阻止发布。</p><h3>experiment-draft.yaml</h3><pre><code># 面向 v0.2 的三个 Agent 配置对比示例。
+# v0.1 只选择一个 Profile，global_concurrency 设为 1。
+# 以下版本 ID 是示例引用；未在数据库登记时必须拒绝执行。
+schema_version: agentlab.experiment/v1alpha1
+kind: ExperimentDraft
+name: 订单分页三种 Agent 配置对比
+mode: agent_profile
+task_version_ids:
+  - demo-task-pagination-v1
+profile_version_ids:
+  - demo-profile-cursor-v1
+  - demo-profile-grok-v1
+  - demo-profile-opencode-v1
+repetitions: 1
+protocol: single-pass-v1
+scheduler:
+  global_concurrency: 2
+  per_account_concurrency: 1
+  max_auto_infra_retries: 0
+budget:
+  max_agent_starts: 3
+  observed_cost_limit_microusd: null
+  cost_enforcement: informational
+intervention_policy: disallow
+export_policy:
+  include_credentials: false
+  include_reference_solution: false
+</code></pre><h3>profile-draft.yaml</h3><pre><code># 不包含模型 ID、CLI 版本或凭据的虚构实测值。
+# REPLACE_ 字段必须被 doctor 实际结果替换，不能直接发布。
+schema_version: agentlab.profile/v1alpha1
+kind: AgentProfileDraft
+name: Grok 官方登录个人配置
+adapter: grok
+cli:
+  executable: grok
+  expected_version: REPLACE_WITH_DOCTOR_CLI_VERSION
+  auto_update: false
+model:
+  display_name: 你实际可用的 Grok 模型
+  requested_id: REPLACE_WITH_VERIFIED_MODEL_ID
+  parameters: {}
+auth:
+  kind: official_login
+  account_ref: account-grok-personal
+  credential_ref: REPLACE_WITH_APPROVED_LOCAL_CREDENTIAL_REF
+billing:
+  path: unknown
+  entitlement_verified_at: null
+execution:
+  executor: docker
+  environment_ref: demo-go-api-linux-amd64
+  permission_policy_ref: REPLACE_WITH_APPROVED_PERMISSION_POLICY
+  network_policy_ref: REPLACE_WITH_TESTED_NETWORK_POLICY
+session_policy: fresh
+rules_policy: explicit_snapshot
+</code></pre><h3>task-draft.yaml</h3><pre><code># TaskDraft 示例；仅是设计草稿，不是已实现软件的可执行配置。
+# 引用的项目、环境、verifier 必须先登记；发布时解析固定提交和摘要。
+schema_version: agentlab.task/v1alpha1
+kind: TaskDraft
+name: 修复订单列表游标分页
+project_ref: demo-orders-api
+source:
+  base_ref: master
+  history_policy: baseline_only
+environment_ref: demo-go-api-linux-amd64
+prompt: |
+  修复订单列表的游标分页行为。
+  订单按 created_at 倒序，时间相同时按 id 倒序。
+  翻页不得重复或遗漏时间相同的记录。
+  非法游标返回明确的 400 响应，默认分页大小为 20，上限为 100。
+  保持现有公开接口兼容，补充覆盖边界情况的测试。
+  不修改验证器、认证逻辑或部署配置；不推送和合并代码。
+change_policy:
+  allowed_paths:
+    - internal/orders/**
+    - tests/orders/**
+  forbid_special_files: true
+  forbid_symlinks: true
+verifier_ref: demo-orders-pagination-v1
+baseline_expectations:
+  regression: pass
+  pagination_acceptance: fail
+candidate_expectations:
+  regression: pass
+  pagination_acceptance: pass
+limits:
+  agent_wall_seconds: 1800
+  prepare_wall_seconds: 600
+  verify_wall_seconds: 600
+  log_bytes: 67108864
+  artifact_bytes: 536870912
+  max_files: 10000
+protocol: single-pass-v1
+</code></pre></article><footer class="foot">Markdown 为主文档。本阅读版为离线单文件；源码与外部一手资料见技术设计第 19 章。</footer></main></div></body></html>
