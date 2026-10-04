@@ -37,8 +37,11 @@ func TestCollectsUntrackedAndBinaryWithoutTouchingSource(t *testing.T) {
 	if err := os.Remove(filepath.Join(next, "keep.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(next, ".git", "index"), []byte("tampered"), 0o644); err == nil {
-		// .git is absent; creating it must not become the collected truth.
+	if err := os.MkdirAll(filepath.Join(next, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(next, ".git", "index"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	patch, err := Collect(base, next, Limits{})
 	if err != nil {
