@@ -8,7 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/sllt/agentlab/internal/agent/fixture"
 	"github.com/sllt/agentlab/internal/bootstrap"
+	"github.com/sllt/agentlab/internal/doctor"
+	"github.com/sllt/agentlab/internal/runner"
 	"github.com/sllt/agentlab/internal/version"
 )
 
@@ -27,11 +30,29 @@ func run(args []string) error {
 		}
 		return serve(addr)
 	}
-	if args[0] == "version" {
+	switch args[0] {
+	case "version":
 		fmt.Printf("%s %s\npi %s\n", version.Product, version.Version, version.PiCommit)
 		return nil
+	case "fake-agent":
+		os.Exit(fixture.Run())
+		return nil
+	case "runner":
+		return runner.Serve(context.Background(), os.Stdin, os.Stdout)
+	case "doctor":
+		adapter := "fixture"
+		if len(args) > 1 {
+			adapter = args[1]
+		}
+		report := doctor.Static(context.Background(), adapter, "", "", false)
+		fmt.Printf("%s static=%t verified=%t model_call=%s network=%s blockers=%v\n", report.Adapter, report.StaticPassed, report.Verified, report.ModelCall, report.Network, report.Blockers)
+		if !report.StaticPassed {
+			return errors.New("doctor 未通过")
+		}
+		return nil
+	default:
+		return errors.New("用法: agentlab serve [127.0.0.1:43117] | runner | doctor [adapter] | version")
 	}
-	return errors.New("用法: agentlab serve [127.0.0.1:43117] | agentlab version")
 }
 
 func serve(addr string) error {

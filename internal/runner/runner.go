@@ -1,0 +1,336 @@
+// Package runner speaks the private NDJSON protocol and supervises one attempt.
+// Agent stdout is captured. It is never promoted to a control event.
+package runner
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/sllt/agentlab/internal/agent"
+	"github.com/sllt/agentlab/internal/workspace"
+)
+
+const maxFrame = 1 << 20
+
+type Spec struct {
+	SchemaVersion string           `json:"schema_version"`
+	AttemptID     string           `json:"attempt_id"`
+	Fence         int64            `json:"fence"`
+	Token         string           `json:"token"`
+	WorkDir       string           `json:"work_dir"`
+	BaselineDir   string           `json:"baseline_dir"`
+	Prompt        string           `json:"prompt"`
+	Executor      string           `json:"executor"`
+	Network       string           `json:"network"`
+	Launch        agent.LaunchSpec `json:"launch"`
+	Limits        workspace.Limits `json:"limits"`
+	WallSeconds   int              `json:"wall_seconds"`
+	LogBytes      int64            `json:"log_bytes"`
+}
+
+type Event struct {
+	SchemaVersion string          `json:"schema_version"`
+	AttemptID     string          `json:"attempt_id"`
+	Fence         int64           `json:"fence"`
+	Sequence      int64           `json:"sequence"`
+	ObservedAt    string          `json:"observed_at"`
+	Origin        string          `json:"origin"`
+	Type          string          `json:"type"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
+}
+
+type control struct {
+	Type   string `json:"type"`
+	Token  string `json:"token"`
+	Reason string `json:"reason"`
+	Spec   *Spec  `json:"spec"`
+}
+
+// Serve reads one Start from in, runs the attempt, and writes events to out.
+// Closing in is treated as control-plane loss: the process tree is stopped.
+func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+	dec := json.NewDecoder(in)
+	dec.UseNumber()
+	var msg control
+	if err := dec.Decode(&msg); err != nil {
+		return err
+	}
+	if msg.Type != "Start" || msg.Spec == nil || msg.Token == "" || msg.Token != msg.Spec.Token {
+		return errors.New("invalid start")
+	}
+	spec := msg.Spec
+	if spec.Network == "restricted" {
+		return errors.New("network restriction is not enforced")
+	}
+	var seq int64
+	var mu sync.Mutex
+	emit := func(origin, typ string, payload any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		seq++
+		ev := Event{SchemaVersion: "agentlab.event/v1", AttemptID: spec.AttemptID, Fence: spec.Fence, Sequence: seq, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Origin: origin, Type: typ}
+		if payload != nil {
+			b, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			ev.Payload = b
+		}
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		b = append(b, '\n')
+		_, err = out.Write(b)
+		return err
+	}
+	if err := emit("runner", "Ready", map[string]string{"executor": spec.Executor, "network": spec.Network}); err != nil {
+		return err
+	}
+	journal := filepathJoin(spec.WorkDir, "journal.json")
+	if err := writeJournal(journal, "armed"); err != nil {
+		return err
+	}
+	if err := emit("runner", "PhaseChanged", map[string]string{"phase": "preparing"}); err != nil {
+		return err
+	}
+	cancel := make(chan string, 1)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		for {
+			var next control
+			if err := dec.Decode(&next); err != nil {
+				select {
+				case cancel <- "control_lost":
+				default:
+				}
+				return
+			}
+			if next.Type == "Cancel" || next.Type == "Shutdown" {
+				reason := next.Reason
+				if reason == "" {
+					reason = next.Type
+				}
+				select {
+				case cancel <- reason:
+				default:
+				}
+				return
+			}
+		}
+	}()
+	if err := emit("runner", "PhaseChanged", map[string]string{"phase": "running"}); err != nil {
+		return err
+	}
+	if err := writeJournal(journal, "started"); err != nil {
+		return err
+	}
+	cmd, err := command(spec)
+	if err != nil {
+		_ = emit("runner", "Finished", map[string]any{"exit_code": -1, "error": err.Error(), "agent_started": false})
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = writeJournal(journal, "start_failed")
+		_ = emit("runner", "Finished", map[string]any{"exit_code": -1, "error": err.Error(), "agent_started": false})
+		return nil
+	}
+	logPath := filepathJoin(spec.WorkDir, "agent.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		_ = killTree(cmd)
+		return err
+	}
+	defer logFile.Close()
+	var logBytes int64
+	var truncated bool
+	limit := spec.LogBytes
+	if limit <= 0 {
+		limit = 64 << 20
+	}
+	decode := agent.NewLineDecoder()
+	consume := func(stream string, r io.Reader) {
+		reader := bufio.NewReaderSize(r, 64*1024)
+		for {
+			line, err := reader.ReadSlice('\n')
+			if errors.Is(err, bufio.ErrBufferFull) {
+				truncated = true
+				continue
+			}
+			if len(line) > 0 {
+				if int64(len(line)) > maxFrame {
+					truncated = true
+					line = line[:maxFrame]
+				}
+				if logBytes < limit {
+					_, _ = logFile.Write(line)
+					logBytes += int64(len(line))
+				} else {
+					truncated = true
+				}
+				events, decErr := decode.Decode(stream, line)
+				if decErr == nil {
+					for _, ev := range events {
+						if ev.Type == "Finished" || ev.Type == "CleanupCompleted" || ev.Type == "VerifiedPass" {
+							ev.Type = "agent_event"
+						}
+						_ = emit(ev.Origin, ev.Type, json.RawMessage(ev.Payload))
+					}
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); consume("stdout", stdout) }()
+	go func() { defer wg.Done(); consume("stderr", stderr) }()
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- cmd.Wait() }()
+	wall := spec.WallSeconds
+	if wall <= 0 {
+		wall = 60
+	}
+	timer := time.NewTimer(time.Duration(wall) * time.Second)
+	defer timer.Stop()
+	var exitErr error
+	reason := ""
+	select {
+	case exitErr = <-waitErr:
+	case reason = <-cancel:
+		_ = killTree(cmd)
+		exitErr = <-waitErr
+	case <-timer.C:
+		reason = "agent_time_limit"
+		_ = killTree(cmd)
+		exitErr = <-waitErr
+	case <-ctx.Done():
+		reason = "context"
+		_ = killTree(cmd)
+		exitErr = <-waitErr
+	}
+	wg.Wait()
+	code := 0
+	if exitErr != nil {
+		var ee *exec.ExitError
+		if errors.As(exitErr, &ee) {
+			code = ee.ExitCode()
+		} else {
+			code = -1
+		}
+	}
+	_ = emit("runner", "LogSegmentCommitted", map[string]any{"path": "agent.log", "bytes": logBytes, "truncated": truncated})
+	patch, patchErr := workspace.Collect(spec.BaselineDir, spec.WorkDir, spec.Limits)
+	if patchErr != nil {
+		_ = emit("runner", "PatchCollected", map[string]any{"error": patchErr.Error()})
+	} else {
+		_ = emit("runner", "PatchCollected", map[string]any{"digest": patch.Digest, "files": len(patch.Changes)})
+		_ = os.WriteFile(filepathJoin(spec.WorkDir, "patch.json"), mustJSON(patch), 0o644)
+	}
+	_ = killTree(cmd)
+	clean := processGroupGone(cmd)
+	cleanup := "clean"
+	if !clean {
+		cleanup = "quarantined"
+	}
+	_ = emit("runner", "CleanupCompleted", map[string]string{"state": cleanup})
+	_ = emit("runner", "Finished", map[string]any{"exit_code": code, "reason": reason, "agent_started": true, "cleanup": cleanup, "truncated": truncated})
+	return nil
+}
+
+func command(spec *Spec) (*exec.Cmd, error) {
+	if spec.Launch.Executable == "" {
+		return nil, errors.New("missing executable")
+	}
+	if spec.Executor != "native-trusted" && spec.Executor != "" {
+		return nil, fmt.Errorf("runner native path refuses executor %s", spec.Executor)
+	}
+	cmd := exec.Command(spec.Launch.Executable, spec.Launch.Args...)
+	cmd.Dir = spec.WorkDir
+	cmd.Env = sanitizedEnv(spec.Launch.Env)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd, nil
+}
+
+func sanitizedEnv(extra map[string]string) []string {
+	allow := []string{"PATH", "LANG", "LC_ALL", "TZ", "HOME", "TMPDIR"}
+	var out []string
+	for _, k := range allow {
+		if v, ok := os.LookupEnv(k); ok {
+			out = append(out, k+"="+v)
+		}
+	}
+	for k, v := range extra {
+		switch k {
+		case "PATH", "LANG", "LC_ALL", "TZ", "HOME", "TMPDIR", "AGENTLAB_FAKE_MODE":
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
+}
+
+func killTree(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	pid := cmd.Process.Pid
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(-pid, 0) != nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return syscall.Kill(-pid, syscall.SIGKILL)
+}
+
+func processGroupGone(cmd *exec.Cmd) bool {
+	if cmd == nil || cmd.Process == nil {
+		return true
+	}
+	return syscall.Kill(-cmd.Process.Pid, 0) != nil
+}
+
+func writeJournal(path, state string) error {
+	if err := os.MkdirAll(filepathDir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "{\"agent_start\":%q}\n", state); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+func filepathJoin(elem ...string) string { return join(elem...) }
+func filepathDir(path string) string     { return dir(path) }
