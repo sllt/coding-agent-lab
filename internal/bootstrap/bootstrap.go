@@ -76,9 +76,12 @@ func Build(cfg Config) (*Runtime, error) {
 	opts := []pi.Option{
 		pi.WithExplicitHTTPStatus(),
 		pi.WithConfig(map[string]string{
-			"HTTP_ENABLED":    "false",
-			"GRPC_ENABLED":    "false",
-			"METRICS_ENABLED": "false",
+			"HTTP_ENABLED":           "false",
+			"GRPC_ENABLED":           "false",
+			"METRICS_ENABLED":        "false",
+			"CORS_ALLOWED_ORIGINS":   loopbackOrigins(cfg.Addr),
+			"CORS_ALLOWED_HEADERS":   "X-CSRF-Token, Idempotency-Key, Last-Event-ID",
+			"CORS_ALLOW_CREDENTIALS": "true",
 		}),
 	}
 	for _, r := range resources {
@@ -262,6 +265,27 @@ func newID() string {
 		return fmt.Sprintf("req-%d", time.Now().UnixNano())
 	}
 	return "req-" + hex.EncodeToString(b[:])
+}
+
+func loopbackOrigins(addr string) string {
+	_, port, err := splitHostPortLoose(addr)
+	if err != nil || port == "" || port == "0" {
+		port = "43117"
+	}
+	ports := []string{port, "43118"}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, p := range ports {
+		for _, host := range []string{"127.0.0.1", "localhost"} {
+			origin := "http://" + host + ":" + p
+			if _, ok := seen[origin]; ok {
+				continue
+			}
+			seen[origin] = struct{}{}
+			out = append(out, origin)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func requireLoopback(addr string) error {

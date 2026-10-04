@@ -68,6 +68,32 @@ func TestHTTPHandlerAndStreamDoNotUseInventedAPI(t *testing.T) {
 	}
 }
 
+func TestLoopbackBrowserOriginIsNotRejectedAsCORS(t *testing.T) {
+	rt, err := Build(Config{Addr: "127.0.0.1:43117"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ host, origin string }{
+		{"127.0.0.1:43117", "http://127.0.0.1:43117"},
+		{"127.0.0.1:43118", "http://127.0.0.1:43118"},
+		{"localhost:43118", "http://localhost:43118"},
+	}
+	for _, tc := range cases {
+		origin := tc.origin
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		req.Host = tc.host
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		rt.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "CORS origin") {
+			t.Fatalf("origin %s status %d body %s", origin, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Access-Control-Allow-Origin") != origin {
+			t.Fatalf("origin %s allow header %q", origin, rec.Header().Get("Access-Control-Allow-Origin"))
+		}
+	}
+}
+
 func TestRejectsNonLoopbackAndForeignOrigin(t *testing.T) {
 	if _, err := Build(Config{Addr: "0.0.0.0:43117"}); err == nil {
 		t.Fatal("expected loopback rejection")
@@ -90,6 +116,9 @@ func TestRejectsNonLoopbackAndForeignOrigin(t *testing.T) {
 	rt.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("origin status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Origin 不被接受") || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("foreign origin must stay closed: %s", rec.Body.String())
 	}
 }
 

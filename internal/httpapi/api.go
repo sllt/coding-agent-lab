@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -537,6 +538,9 @@ func (a *API) listExperiments(c *pi.Context) (any, error) {
 	if items == nil {
 		items = []sqlite.Experiment{}
 	}
+	for i := range items {
+		items[i] = a.projectState(c, items[i])
+	}
 	return ok(c, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -549,7 +553,40 @@ func (a *API) getExperiment(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	return ok(c, http.StatusOK, map[string]any{"experiment": exp, "trials": trials, "summary": summarize(trials)})
+	exp = a.projectState(c, exp)
+	return ok(c, http.StatusOK, map[string]any{"experiment": exp, "trials": a.withCleanup(c, trials), "summary": summarize(trials)})
+}
+
+func (a *API) projectState(c *pi.Context, exp sqlite.Experiment) sqlite.Experiment {
+	trials, err := a.svc.Store.ListTrials(c, exp.ID)
+	if err != nil || len(trials) == 0 {
+		return exp
+	}
+	states := make([]domain.ExecutionState, len(trials))
+	for i, trial := range trials {
+		states[i] = domain.ExecutionState(trial.ExecutionState)
+	}
+	exp.State = string(domain.RollupExecution(states))
+	return exp
+}
+
+type trialView struct {
+	sqlite.Trial
+	CleanupState string `json:"cleanup_state"`
+}
+
+func (a *API) withCleanup(c *pi.Context, trials []sqlite.Trial) []trialView {
+	out := make([]trialView, 0, len(trials))
+	for _, trial := range trials {
+		view := trialView{Trial: trial, CleanupState: "not_started"}
+		if trial.CurrentAttemptID != "" {
+			if attempt, err := a.svc.Store.GetAttempt(c, trial.CurrentAttemptID); err == nil && attempt.CleanupState != "" {
+				view.CleanupState = attempt.CleanupState
+			}
+		}
+		out = append(out, view)
+	}
+	return out
 }
 
 func (a *API) cancelTrial(c *pi.Context) (any, error) {
@@ -728,11 +765,12 @@ func (a *API) events(c *pi.Context) (any, error) {
 	}
 	last := parseLast(c.Value(lastKey{}))
 	path := filepath.Join(a.svc.DataDir, "attempts", id, "events.ndjson")
+	once := c.Param("once") == "1"
 	return response.Stream{
 		StatusCode:  http.StatusOK,
 		ContentType: "text/event-stream",
 		Run: func(ctx context.Context, w io.Writer) error {
-			return writeEvents(ctx, w, id, path, last)
+			return writeEvents(ctx, w, id, path, last, once)
 		},
 	}, nil
 }
@@ -906,12 +944,50 @@ func (a *API) underData(path string) bool {
 }
 
 func (a *API) serveStatic(w http.ResponseWriter, r *http.Request) {
-	root := filepath.Join("web", "dist")
+	root, err := filepath.Abs(filepath.Join("web", "dist"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveSPA(w, r, root)
+}
+
+func serveSPA(w http.ResponseWriter, r *http.Request, root string) {
 	if _, err := os.Stat(root); err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	http.FileServer(http.Dir(root)).ServeHTTP(w, r)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	rel := strings.TrimPrefix(pathClean(r.URL.Path), "/")
+	target := root
+	if rel != "" {
+		target = filepath.Join(root, filepath.FromSlash(rel))
+	}
+	if !insideDir(root, target) {
+		http.NotFound(w, r)
+		return
+	}
+	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, target)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(root, "index.html"))
+}
+
+func pathClean(p string) string {
+	if p == "" {
+		return "/"
+	}
+	clean := path.Clean("/" + p)
+	return clean
+}
+
+func insideDir(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (a *API) webhookSecret() ([]byte, error) {
@@ -979,7 +1055,7 @@ func parseLast(v any) int64 {
 	return n
 }
 
-func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last int64) error {
+func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last int64, once bool) error {
 	body, err := os.ReadFile(path)
 	if err != nil && last > 0 {
 		_, err = io.WriteString(w, "event: gap\ndata: {\"gap\":true,\"reason\":\"snapshot_required\"}\n\n")
@@ -1008,6 +1084,9 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 		if _, err = io.WriteString(w, "id: "+attemptID+":"+strconv.FormatInt(seq, 10)+"\ndata: "+string(line)+"\n\n"); err != nil {
 			return err
 		}
+	}
+	if once {
+		return nil
 	}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()

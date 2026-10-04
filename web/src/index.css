@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root {
+  color: #1c1915;
+  background: #f4efe6;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button, input, select, textarea {
+  font: inherit;
+}
+
+pre, code, .mono {
+  font-family: "IBM Plex Mono", "Source Code Pro", ui-monospace, monospace;
+}

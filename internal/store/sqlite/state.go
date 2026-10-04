@@ -98,7 +98,7 @@ func (s *Store) RequestCancel(ctx context.Context, trialID string) (Trial, error
 			return err
 		}
 		out.CancelRequested = cancel != 0
-		return nil
+		return rollupExperiment(ctx, tx, out.ExperimentID)
 	})
 	return out, err
 }
@@ -133,8 +133,14 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, fence int64
 		if currentAttempt != attemptID {
 			return errStaleAttempt
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE trials SET execution_state=?, verdict=? WHERE id=? AND current_attempt_id=?`, state, verdict, trialID, attemptID)
-		return err
+		if _, err := tx.ExecContext(ctx, `UPDATE trials SET execution_state=?, verdict=? WHERE id=? AND current_attempt_id=?`, state, verdict, trialID, attemptID); err != nil {
+			return err
+		}
+		var experimentID string
+		if err := tx.QueryRowContext(ctx, `SELECT experiment_id FROM trials WHERE id=?`, trialID).Scan(&experimentID); err != nil {
+			return err
+		}
+		return rollupExperiment(ctx, tx, experimentID)
 	})
 	if errors.Is(err, errStaleFence) {
 		_ = s.Audit(ctx, "control", "stale_fence", attemptID, `{}`)
@@ -144,6 +150,30 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, fence int64
 		_ = s.Audit(ctx, "control", "stale_attempt", attemptID, `{}`)
 		return ErrConflict
 	}
+	return err
+}
+
+func rollupExperiment(ctx context.Context, tx *sql.Tx, experimentID string) error {
+	if experimentID == "" {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT execution_state FROM trials WHERE experiment_id=?`, experimentID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var states []domain.ExecutionState
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			return err
+		}
+		states = append(states, domain.ExecutionState(state))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE experiments SET state=? WHERE id=?`, string(domain.RollupExecution(states)), experimentID)
 	return err
 }
 

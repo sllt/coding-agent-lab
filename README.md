@@ -13,7 +13,15 @@ go test ./...
 go run ./cmd/agentlab serve 127.0.0.1:43117
 ```
 
-浏览器打开 <http://127.0.0.1:43117>。服务只绑定 loopback，第一次启动需要创建管理员。
+开发界面另开一个终端：
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+开发服务器是 <http://127.0.0.1:43118>，把 `/api` 转到控制面。也可以先 `npm run build`，再打开 <http://127.0.0.1:43117>，由控制面提供 `web/dist`。两个地址都只在本机 loopback。第一次启动需要创建管理员，密码至少 8 位。
 
 `examples/` 里的 YAML 是草稿合同，含 `REPLACE_` 的字段不能发布。doctor 在未获授权时只做静态检查，不会发起模型调用。
 

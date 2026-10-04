@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestRollupExecutionFollowsUnfinishedTrials(t *testing.T) {
+	if RollupExecution(nil) != ExecQueued {
+		t.Fatal("empty plan stays queued")
+	}
+	if RollupExecution([]ExecutionState{ExecCompleted, ExecQueued}) != ExecQueued {
+		t.Fatal("a queued trial keeps the plan queued")
+	}
+	if RollupExecution([]ExecutionState{ExecCompleted, ExecVerifying}) != ExecVerifying {
+		t.Fatal("verification is still in progress")
+	}
+	if RollupExecution([]ExecutionState{ExecCompleted, ExecCompleted}) != ExecCompleted {
+		t.Fatal("finished plan is completed")
+	}
+	if RollupExecution([]ExecutionState{ExecCancelled}) != ExecCancelled {
+		t.Fatal("a cancelled-only plan stays cancelled")
+	}
+	if RollupExecution([]ExecutionState{ExecCompleted, ExecCancelled}) != ExecCompleted {
+		t.Fatal("mixed terminal trials mean the plan ended")
+	}
+}
+
 func TestIllegalTransitionCancelRaceAndStaleFence(t *testing.T) {
 	if CanTransition(ExecCompleted, ExecCancelling) {
 		t.Fatal("completed cannot cancel")

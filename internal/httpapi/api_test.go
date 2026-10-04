@@ -310,6 +310,47 @@ func experimentID(body []byte) string {
 	return payload.Data.ID
 }
 
+func TestSPAFallbackDoesNotEscapeRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("lab-shell"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "app.js"), []byte("js"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/", "/experiments/new", "/compare"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		serveSPA(rec, req, root)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "lab-shell") {
+			t.Fatalf("%s status %d body %s", p, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	serveSPA(rec, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil), root)
+	if rec.Body.String() != "js" {
+		t.Fatalf("asset %s", rec.Body.String())
+	}
+	outside := filepath.Join(filepath.Dir(root), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.URL.Path = "/../../secret.txt"
+	rec = httptest.NewRecorder()
+	serveSPA(rec, req, root)
+	if strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("escape status %d body %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusBadRequest && !strings.Contains(rec.Body.String(), "lab-shell") {
+		t.Fatalf("escape status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func webhook(rt *bootstrap.Runtime, body []byte, sig, dedupe string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
 	req.Host = "127.0.0.1"

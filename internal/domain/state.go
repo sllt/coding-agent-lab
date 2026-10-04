@@ -34,6 +34,30 @@ const (
 	CleanupQuarantined CleanupState = "quarantined"
 )
 
+// RollupExecution summarizes a plan. An unfinished trial keeps the experiment
+// in that phase. When every trial is terminal, a single shared state is kept;
+// a mix of terminal states means the plan itself has ended.
+func RollupExecution(states []ExecutionState) ExecutionState {
+	if len(states) == 0 {
+		return ExecQueued
+	}
+	priority := []ExecutionState{ExecCancelling, ExecVerifying, ExecCollecting, ExecRunning, ExecPreparing, ExecQueued}
+	for _, want := range priority {
+		for _, state := range states {
+			if state == want {
+				return want
+			}
+		}
+	}
+	shared := states[0]
+	for _, state := range states[1:] {
+		if state != shared {
+			return ExecCompleted
+		}
+	}
+	return shared
+}
+
 func (s ExecutionState) Terminal() bool {
 	switch s {
 	case ExecCompleted, ExecCancelled, ExecAborted:
