@@ -37,11 +37,14 @@ type ComparisonInput struct {
 	ProtocolDigest    string
 	VerifierDigest    string
 	BudgetDigest      string
-	ProfileDigest     string
-	ModelID           string
-	Executor          string
-	Network           string
-	ModelMismatch     bool
+	// ProfileDigest is the full profile digest for workflow mode. For
+	// controlled_model it is the digest with the declared model id removed,
+	// because that model id is the only intended variable.
+	ProfileDigest string
+	ModelID       string
+	Executor      string
+	Network       string
+	ModelMismatch bool
 }
 
 type Comparison struct {

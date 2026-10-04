@@ -99,6 +99,20 @@ func TestFingerprintsAndComparisonDoNotMergeUnlikeRuns(t *testing.T) {
 	if err != nil || got.Comparable {
 		t.Fatal("model mismatch must leave the default board")
 	}
+	modelA := ComparisonInput{Mode: ModeControlledModel, TaskDigest: "t", EnvironmentDigest: "e", ProtocolDigest: "proto", VerifierDigest: "v", BudgetDigest: "b", Executor: "docker", Network: "unrestricted", ProfileDigest: "profile-sans-model", ModelID: "model-a"}
+	modelB := modelA
+	modelB.ModelID = "model-b"
+	ok, reasons, err = SameBoard(modelA, modelB)
+	if err != nil || !ok {
+		t.Fatalf("controlled model variable must stay on one board: %v %v", ok, reasons)
+	}
+	flowA := ComparisonInput{Mode: ModeWorkflow, TaskDigest: "t", EnvironmentDigest: "e", ProtocolDigest: "single", VerifierDigest: "v", BudgetDigest: "b", Executor: "docker", Network: "unrestricted", ProfileDigest: "p"}
+	flowB := flowA
+	flowB.ProtocolDigest = "review-fix"
+	ok, _, err = SameBoard(flowA, flowB)
+	if err != nil || !ok {
+		t.Fatal("workflow comparison keeps task and budget, not the protocol")
+	}
 	native := a
 	native.Executor = "native-trusted"
 	ok, reasons, err = SameBoard(a, native)
