@@ -11,6 +11,24 @@ export function Settings() {
   const [error, setError] = useState('')
   useEffect(() => { api.request<Settings>('GET', '/api/v1/settings').then(setSettings).catch((err: Error) => setError(err.message)) }, [])
 
+  function mapHarbor() {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(harbor)
+    } catch {
+      setResult('')
+      setError('Harbor 文本不是合法 JSON。')
+      return
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      setResult('')
+      setError('Harbor 文本必须是一个 JSON 对象。')
+      return
+    }
+    setError('')
+    void api.request('POST', '/api/v1/imports/harbor', parsed).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl">设置</h1>
@@ -23,10 +41,11 @@ export function Settings() {
       ) : <Notice>正在读取设置。</Notice>}
       <Card title="备份">
         <Button onClick={() => void api.request<{ path: string; note: string }>('POST', '/api/v1/maintenance/backup').then((data) => setResult(`${data.note} ${data.path}`)).catch((err: Error) => setError(err.message))}>生成一致性备份</Button>
+        <p className="mt-2 text-sm">仍有未结束的 Attempt 时不会生成备份。</p>
       </Card>
       <Card title="Harbor 子集">
         <TextArea rows={6} value={harbor} onChange={(e) => setHarbor(e.target.value)} />
-        <Button className="mt-2" onClick={() => void api.request('POST', '/api/v1/imports/harbor', JSON.parse(harbor)).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))}>查看映射</Button>
+        <Button className="mt-2" onClick={mapHarbor}>查看映射</Button>
         <p className="mt-2 text-sm">未映射字段会列出来。这里不会自动合并代码。</p>
       </Card>
       {result ? <pre className="overflow-x-auto whitespace-pre-wrap text-xs">{result}</pre> : null}

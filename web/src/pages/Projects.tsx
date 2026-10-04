@@ -8,12 +8,14 @@ type Version = { ID: string; Version: number; Digest: string }
 
 export function Projects() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [loading, setLoading] = useState(true)
   const [name, setName] = useState('')
   const [selected, setSelected] = useState('')
   const [tasks, setTasks] = useState<Task[]>([])
   const [taskName, setTaskName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [source, setSource] = useState('')
+  const [root, setRoot] = useState('')
   const [versions, setVersions] = useState<Version[]>([])
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -22,7 +24,9 @@ export function Projects() {
     const data = await api.request<{ items: Project[] | null }>('GET', '/api/v1/projects')
     setProjects(data.items || [])
   }
-  useEffect(() => { load().catch((err: Error) => setError(err.message)) }, [])
+  useEffect(() => {
+    load().catch((err: Error) => setError(err.message)).finally(() => setLoading(false))
+  }, [])
 
   async function open(id: string) {
     setSelected(id)
@@ -43,7 +47,7 @@ export function Projects() {
         </div>
         <p className="mt-2 text-sm text-[#6b6258]">登记不会运行仓库里的脚本，也不会改你的源目录。</p>
       </Card>
-      {projects.length === 0 ? <Notice>还没有项目。</Notice> : (
+      {loading ? <Notice>正在读取项目。</Notice> : projects.length === 0 ? <Notice>还没有项目。</Notice> : (
         <ul className="flex flex-col gap-2">
           {projects.map((project) => (
             <li key={project.ID}>
@@ -54,10 +58,15 @@ export function Projects() {
       )}
       {selected ? (
         <Card title="任务草稿">
+          <div className="mb-3 flex flex-col gap-2">
+            <Input placeholder="允许根目录的绝对路径" value={root} onChange={(e) => setRoot(e.target.value)} />
+            <Button tone="quiet" disabled={!root.trim()} onClick={() => void api.request('POST', `/api/v1/projects/${selected}/roots`, { roots: [root.trim()] }).then(() => setMessage('已登记允许根。发布只会冻结这个根下面的目录。')).catch((err: Error) => setError(err.message))}>登记允许根</Button>
+            <p className="text-sm text-[#6b6258]">控制面数据目录不能作为任务来源。发布时会把当时的文件复制进不可变快照，之后改源目录不会改变已发布版本。</p>
+          </div>
           <div className="flex flex-col gap-2">
             <Input placeholder="任务名称" value={taskName} onChange={(e) => setTaskName(e.target.value)} />
             <TextArea placeholder="交给 Agent 的说明" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-            <Input placeholder="任务目录，可空。示范：fixtures/tasks/orders-pagination" value={source} onChange={(e) => setSource(e.target.value)} />
+            <Input placeholder="任务目录，须在允许根内。示范：fixtures/tasks/orders-pagination 的绝对路径" value={source} onChange={(e) => setSource(e.target.value)} />
             <Button onClick={() => void api.request('POST', `/api/v1/projects/${selected}/tasks`, { name: taskName, prompt, source_dir: source, verifier_root: source }).then(() => open(selected)).catch((err: Error) => setError(err.message))}>保存草稿</Button>
           </div>
           {tasks.length === 0 ? <p className="mt-3 text-sm">这个项目还没有任务。</p> : (
@@ -65,7 +74,7 @@ export function Projects() {
               {tasks.map((task) => (
                 <li key={task.ID} className="flex flex-wrap items-center gap-2">
                   <span>{task.Name}</span>
-                  <Button tone="quiet" onClick={() => void api.request('POST', `/api/v1/tasks/${task.ID}/publish`).then(() => api.request<{ items: Version[] }>("GET", `/api/v1/tasks/${task.ID}/versions`)).then((data) => { setVersions(data.items || []); setMessage('已发布新版本。已经跑过的计划不会被改写。') }).catch((err: Error) => setError(err.message))}>发布版本</Button>
+                  <Button tone="quiet" onClick={() => void api.request('POST', `/api/v1/tasks/${task.ID}/publish`).then(() => api.request<{ items: Version[] }>("GET", `/api/v1/tasks/${task.ID}/versions`)).then((data) => { setVersions(data.items || []); setMessage('已发布新版本。快照已冻结，已经跑过的计划不会被改写。') }).catch((err: Error) => setError(err.message))}>发布版本</Button>
                 </li>
               ))}
             </ul>

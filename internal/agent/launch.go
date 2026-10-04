@@ -33,7 +33,8 @@ type Cursor struct{}
 
 func (Cursor) Name() string { return "cursor" }
 func (Cursor) Probe(context.Context, ProbeRequest) (Capabilities, error) {
-	return Capabilities{SupportsHeadless: true, SupportsStructuredLog: true, TestedPlatform: "linux/amd64", Probed: false}, nil
+	// Unprobed capabilities stay false. "Not probed" is not the same as "supported".
+	return Capabilities{SupportsHeadless: false, SupportsStructuredLog: false, TestedPlatform: "linux/amd64", Probed: false, Verified: false}, nil
 }
 func (Cursor) NewDecoder() EventDecoder { return NewLineDecoder() }
 func (Cursor) BuildLaunch(_ context.Context, req LaunchRequest) (LaunchSpec, error) {
@@ -56,7 +57,7 @@ type Grok struct{}
 
 func (Grok) Name() string { return "grok" }
 func (Grok) Probe(context.Context, ProbeRequest) (Capabilities, error) {
-	return Capabilities{SupportsHeadless: true, SupportsStructuredLog: true, TestedPlatform: "linux/amd64"}, nil
+	return Capabilities{SupportsHeadless: false, SupportsStructuredLog: false, TestedPlatform: "linux/amd64", Probed: false, Verified: false}, nil
 }
 func (Grok) NewDecoder() EventDecoder { return NewLineDecoder() }
 func (Grok) BuildLaunch(_ context.Context, req LaunchRequest) (LaunchSpec, error) {
@@ -75,7 +76,7 @@ type OpenCode struct{}
 
 func (OpenCode) Name() string { return "opencode" }
 func (OpenCode) Probe(context.Context, ProbeRequest) (Capabilities, error) {
-	return Capabilities{SupportsHeadless: true, SupportsStructuredLog: true, TestedPlatform: "linux/amd64"}, nil
+	return Capabilities{SupportsHeadless: false, SupportsStructuredLog: false, TestedPlatform: "linux/amd64", Probed: false, Verified: false}, nil
 }
 func (OpenCode) NewDecoder() EventDecoder { return NewLineDecoder() }
 func (OpenCode) BuildLaunch(_ context.Context, req LaunchRequest) (LaunchSpec, error) {

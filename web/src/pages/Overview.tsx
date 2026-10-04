@@ -10,7 +10,21 @@ export function Overview() {
   const [data, setData] = useState<OverviewData | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
-    api.request<OverviewData>('GET', '/api/v1/overview').then(setData).catch((err: Error) => setError(err.message))
+    let stop = false
+    async function tick() {
+      try {
+        const next = await api.request<OverviewData>('GET', '/api/v1/overview')
+        if (!stop) {
+          setData(next)
+          setError('')
+        }
+      } catch (err) {
+        if (!stop) setError(err instanceof Error ? err.message : '读取失败')
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), 3000)
+    return () => { stop = true; window.clearInterval(timer) }
   }, [])
   return (
     <div className="flex flex-col gap-4">

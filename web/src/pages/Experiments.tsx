@@ -7,9 +7,26 @@ type Experiment = { ID: string; State: string; ProtocolJSON: string; TrialCount:
 
 export function Experiments() {
   const [items, setItems] = useState<Experiment[]>([])
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   useEffect(() => {
-    api.request<{ items: Experiment[] | null }>('GET', '/api/v1/experiments').then((data) => setItems(data.items || [])).catch((err: Error) => setError(err.message))
+    let stop = false
+    async function tick() {
+      try {
+        const data = await api.request<{ items: Experiment[] | null }>('GET', '/api/v1/experiments')
+        if (!stop) {
+          setItems(data.items || [])
+          setError('')
+        }
+      } catch (err) {
+        if (!stop) setError(err instanceof Error ? err.message : '读取失败')
+      } finally {
+        if (!stop) setLoading(false)
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), 3000)
+    return () => { stop = true; window.clearInterval(timer) }
   }, [])
   return (
     <div className="flex flex-col gap-4">
@@ -18,7 +35,7 @@ export function Experiments() {
         <Link className="text-sm underline" to="/experiments/new">创建</Link>
       </div>
       {error ? <Notice tone="warn">{error}</Notice> : null}
-      {items.length === 0 ? <Notice>还没有实验。空列表不会填演示分数。</Notice> : (
+      {loading ? <Notice>正在读取实验。</Notice> : items.length === 0 ? <Notice>还没有实验。空列表不会填演示分数。</Notice> : (
         <Card>
           <ul className="flex flex-col gap-3 text-sm">
             {items.map((item) => (

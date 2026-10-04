@@ -5,9 +5,12 @@ import { Button, Card, Notice } from '../components/ui.tsx'
 
 type Version = { id: string; label: string }
 
+const maxReps = 30
+
 export function NewExperiment() {
   const navigate = useNavigate()
   const [step, setStep] = useState(1)
+  const [loading, setLoading] = useState(true)
   const [tasks, setTasks] = useState<Version[]>([])
   const [profiles, setProfiles] = useState<Version[]>([])
   const [pickedTasks, setPickedTasks] = useState<string[]>([])
@@ -35,7 +38,7 @@ export function NewExperiment() {
       }
       setTasks(taskVersions)
       setProfiles(profileVersions)
-    })().catch((err: Error) => setError(err.message))
+    })().catch((err: Error) => setError(err.message)).finally(() => setLoading(false))
   }, [])
 
   const formula = useMemo(() => {
@@ -43,17 +46,36 @@ export function NewExperiment() {
     return `${pickedTasks.length} 个任务 × ${pickedProfiles.length} 个配置 × ${reps} 次 = ${total} 个 Trial`
   }, [pickedTasks.length, pickedProfiles.length, reps])
 
+  const payload = useMemo(() => ({
+    mode: 'agent_profile',
+    task_version_ids: [...pickedTasks].sort(),
+    profile_version_ids: [...pickedProfiles].sort(),
+    repetitions: reps,
+    protocol: 'single-pass-v1',
+  }), [pickedTasks, pickedProfiles, reps])
+
+  const idempotencyKey = useMemo(() => `ui-${fnv(JSON.stringify(payload))}`, [payload])
+
   function toggle(list: string[], id: string, set: (v: string[]) => void) {
     set(list.includes(id) ? list.filter((item) => item !== id) : [...list, id])
+  }
+
+  function setRepetitions(value: number) {
+    if (!Number.isFinite(value) || value < 1) {
+      setReps(1)
+      return
+    }
+    setReps(Math.min(maxReps, Math.floor(value)))
   }
 
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl">创建实验 · 第 {step} 步</h1>
       {error ? <Notice tone="warn">{error}</Notice> : null}
+      {loading ? <Notice>正在读取已发布的任务和配置。</Notice> : null}
       {step === 1 ? (
         <Card title="选择已发布任务">
-          {tasks.length === 0 ? <Notice>还没有已发布的任务版本。</Notice> : tasks.map((task) => (
+          {!loading && tasks.length === 0 ? <Notice>还没有已发布的任务版本。</Notice> : tasks.map((task) => (
             <label key={task.id} className="mb-2 flex gap-2 text-sm"><input type="checkbox" checked={pickedTasks.includes(task.id)} onChange={() => toggle(pickedTasks, task.id, setPickedTasks)} />{task.label}</label>
           ))}
           <Button disabled={pickedTasks.length === 0} onClick={() => setStep(2)}>下一步</Button>
@@ -61,7 +83,7 @@ export function NewExperiment() {
       ) : null}
       {step === 2 ? (
         <Card title="选择已发布配置">
-          {profiles.length === 0 ? <Notice>还没有已发布的配置。doctor 没通过的草稿不能选。</Notice> : profiles.map((profile) => (
+          {!loading && profiles.length === 0 ? <Notice>还没有已发布的配置。doctor 没通过的草稿不能选。</Notice> : profiles.map((profile) => (
             <label key={profile.id} className="mb-2 flex gap-2 text-sm"><input type="checkbox" checked={pickedProfiles.includes(profile.id)} onChange={() => toggle(pickedProfiles, profile.id, setPickedProfiles)} />{profile.label}</label>
           ))}
           <div className="mt-2 flex gap-2"><Button tone="quiet" onClick={() => setStep(1)}>上一步</Button><Button disabled={pickedProfiles.length === 0} onClick={() => setStep(3)}>下一步</Button></div>
@@ -71,27 +93,36 @@ export function NewExperiment() {
         <Card title="环境、权限和费用">
           <p className="mb-3 text-sm">{formula}。这是计划规模，不是预计 API 请求数，也不是费用估算。</p>
           <ul className="mb-3 list-disc pl-5 text-sm">
-            <li>执行器：native-trusted。本机进程执行，不提供容器级隔离。</li>
+            <li>执行器：native-trusted。本机进程执行，不提供容器级隔离。请求 Docker 也会按 native-trusted 记录。</li>
             <li>网络：unrestricted。restricted 还没有强制执行。</li>
             <li>全局并发默认 1。同一账号的清理未完成时不会再启动。</li>
             <li>费用观测：未知。未知不会被显示成 0。</li>
-            <li>重复次数
-              <input className="ml-2 w-16 rounded border px-2" type="number" min={1} value={reps} onChange={(e) => setReps(Number(e.target.value) || 1)} />
+            <li>重复次数（1 到 {maxReps}）
+              <input className="ml-2 w-16 rounded border px-2" type="number" min={1} max={maxReps} value={reps} onChange={(e) => setRepetitions(Number(e.target.value))} />
             </li>
           </ul>
-          <div className="flex gap-2"><Button tone="quiet" onClick={() => setStep(2)}>上一步</Button><Button onClick={() => void api.request<{ formula: string; note: string }>('POST', '/api/v1/experiments/preview', { mode: 'agent_profile', task_version_ids: pickedTasks, profile_version_ids: pickedProfiles, repetitions: reps, protocol: 'single-pass-v1' }).then((data) => { setPreview(`${data.formula}。${data.note}`); setStep(4) })}>预览规模</Button></div>
+          <div className="flex gap-2"><Button tone="quiet" onClick={() => setStep(2)}>上一步</Button><Button onClick={() => void api.request<{ formula: string; note: string }>('POST', '/api/v1/experiments/preview', payload).then((data) => { setPreview(`${data.formula}。${data.note}`); setStep(4) }).catch((err: Error) => setError(err.message))}>预览规模</Button></div>
         </Card>
       ) : null}
       {step === 4 ? (
         <Card title="确认后才冻结计划">
           <p className="mb-2 text-sm">{preview || formula}</p>
-          <Notice tone="warn">提交会排队执行。假 CLI 不产生模型费用；真实适配器一旦发布并运行，就会消耗对应账号。</Notice>
+          <Notice tone="warn">提交会排队执行。假 CLI 不产生模型费用；真实适配器一旦发布并运行，就会消耗对应账号。同一份计划重复提交会回到原计划，不会再插一份。</Notice>
           <div className="mt-3 flex gap-2">
             <Button tone="quiet" onClick={() => setStep(3)}>上一步</Button>
-            <Button onClick={() => void api.request<{ id: string }>('POST', '/api/v1/experiments', { mode: 'agent_profile', task_version_ids: pickedTasks, profile_version_ids: pickedProfiles, repetitions: reps, protocol: 'single-pass-v1' }, { 'Idempotency-Key': `ui-${Date.now()}` }).then((data) => navigate(`/experiments/${data.id}`)).catch((err: Error) => setError(err.message))}>冻结并排队</Button>
+            <Button onClick={() => void api.request<{ id: string }>('POST', '/api/v1/experiments', payload, { 'Idempotency-Key': idempotencyKey }).then((data) => navigate(`/experiments/${data.id}`)).catch((err: Error) => setError(err.message))}>冻结并排队</Button>
           </div>
         </Card>
       ) : null}
     </div>
   )
+}
+
+function fnv(text: string) {
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
 }

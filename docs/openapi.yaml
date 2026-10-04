@@ -10,112 +10,622 @@ servers:
 paths:
   /api/v1/setup:
     post:
+      operationId: setup
       summary: 创建本机管理员
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Credentials'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
   /api/v1/login:
     post:
+      operationId: login
       summary: 登录并设置 HttpOnly 会话
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Credentials'
+      responses:
+        '200':
+          description: 会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
   /api/v1/logout:
     post:
+      operationId: logout
       summary: 退出
+      responses:
+        '200':
+          description: 已退出
   /api/v1/session:
     get:
+      operationId: session
       summary: 读取当前会话和 CSRF
+      responses:
+        '200':
+          description: 会话
   /api/v1/overview:
     get:
+      operationId: overview
       summary: 运行、排队和阻塞计数
+      responses:
+        '200':
+          description: 概览
   /api/v1/projects:
     get:
+      operationId: listProjects
       summary: 项目分页
+      responses:
+        '200':
+          description: 项目列表
     post:
+      operationId: createProject
       summary: 登记项目
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectDraft'
+      responses:
+        '201':
+          description: 已登记
   /api/v1/projects/{id}/tasks:
     post:
+      operationId: createTask
       summary: 创建任务草稿
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskDraft'
+      responses:
+        '201':
+          description: 已创建
+  /api/v1/projects/{id}/roots:
+    post:
+      operationId: setAllowedRoots
+      summary: 登记任务允许根
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllowedRoots'
+      responses:
+        '200':
+          description: 已登记
   /api/v1/tasks/{id}:
     patch:
+      operationId: patchTask
       summary: 按 row_version 更新草稿
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskPatch'
+      responses:
+        '200':
+          description: 已更新
   /api/v1/tasks/{id}/publish:
     post:
+      operationId: publishTask
       summary: 预检并发布任务版本
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: 已发布
   /api/v1/tasks/{id}/versions:
     get:
+      operationId: taskVersions
       summary: 任务版本
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 版本列表
   /api/v1/profiles:
     get:
+      operationId: listProfiles
       summary: 配置草稿
+      responses:
+        '200':
+          description: 配置列表
     post:
+      operationId: createProfile
       summary: 创建配置草稿
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileDraft'
+      responses:
+        '201':
+          description: 已创建
   /api/v1/profiles/{id}/doctor:
     post:
+      operationId: doctorProfile
       summary: 静态 doctor，不调用付费模型
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DoctorRequest'
+      responses:
+        '200':
+          description: 检查报告
   /api/v1/profiles/{id}/publish:
     post:
+      operationId: publishProfile
       summary: 发布配置版本
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: 已发布
   /api/v1/experiments/preview:
     post:
+      operationId: previewExperiment
       summary: 计算 Trial 数量，不启动
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExperimentPlan'
+      responses:
+        '200':
+          description: 规模
   /api/v1/experiments:
     post:
+      operationId: submitExperiment
       summary: 幂等提交实验计划
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExperimentPlan'
+      responses:
+        '202':
+          description: 已排队
     get:
+      operationId: listExperiments
       summary: 实验列表
+      responses:
+        '200':
+          description: 实验列表
   /api/v1/experiments/{id}:
     get:
+      operationId: getExperiment
       summary: 计划、Trial 和分母
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 实验
   /api/v1/experiments/{id}/export:
     post:
+      operationId: exportExperiment
       summary: 导出，不含凭据和参考解
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: 导出制品
   /api/v1/trials/{id}:
     get:
+      operationId: getTrial
       summary: Trial 与历史 Attempt
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Trial
   /api/v1/trials/{id}/cancel:
     post:
+      operationId: cancelTrial
       summary: 记录取消意图
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: 已记录
   /api/v1/trials/{id}/attempts:
     post:
+      operationId: retryTrial
       summary: 带原因的人工重试
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryRequest'
+      responses:
+        '202':
+          description: 已排队
   /api/v1/attempts/{id}/events:
     get:
+      operationId: attemptEvents
       summary: SSE，支持 Last-Event-ID 与 gap
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 事件流
   /api/v1/attempts/{id}/checks:
     get:
+      operationId: attemptChecks
       summary: 独立验收证据
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 检查
   /api/v1/attempts/{id}/artifacts:
     get:
+      operationId: attemptArtifacts
       summary: 制品清单
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 制品
   /api/v1/attempts/{id}/usage:
     get:
+      operationId: attemptUsage
       summary: 可空用量
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 用量
   /api/v1/attempts/{id}/reviews:
     get:
+      operationId: listReviews
       summary: 人工意见
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 意见
     post:
+      operationId: addReview
       summary: 记录意见，不改写结论
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Review'
+      responses:
+        '201':
+          description: 已记录
   /api/v1/artifacts/{id}/download:
     get:
+      operationId: downloadArtifact
       summary: 按制品 ID 下载
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 文件
   /api/v1/comparisons:
     get:
+      operationId: comparisons
       summary: 可比条件下的计数
+      parameters:
+        - name: experiment_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 对比表
   /api/v1/settings:
     get:
+      operationId: settings
       summary: 执行器、网络和备份状态
+      responses:
+        '200':
+          description: 设置
   /api/v1/maintenance/backup:
     post:
+      operationId: backup
       summary: 维护模式备份
+      responses:
+        '200':
+          description: 备份路径
   /api/v1/imports/harbor:
     post:
+      operationId: importHarbor
       summary: 导入 Harbor 子集并列出未映射字段
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HarborSubset'
+      responses:
+        '200':
+          description: 映射结果
   /api/v1/webhooks:
     post:
+      operationId: webhook
       summary: 签名通知，重复投递只记一次，不自动合并
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookBody'
+      responses:
+        '200':
+          description: 已接受
   /api/v1/accounts:
     get:
+      operationId: listAccounts
       summary: 账号引用
+      responses:
+        '200':
+          description: 账号
     post:
+      operationId: createAccount
       summary: 保存凭据引用
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDraft'
+      responses:
+        '201':
+          description: 已保存
   /api/v1/environments:
     get:
+      operationId: listEnvironments
       summary: 环境版本
+      responses:
+        '200':
+          description: 环境
     post:
+      operationId: createEnvironment
       summary: 发布环境快照
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvironmentDraft'
+      responses:
+        '201':
+          description: 已发布
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+  schemas:
+    Envelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data: {}
+        request_id:
+          type: string
+    ErrorEnvelope:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        request_id:
+          type: string
+    Credentials:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          minLength: 8
+    ProjectDraft:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        source_spec:
+          type: object
+          additionalProperties: true
+    AllowedRoots:
+      type: object
+      required: [roots]
+      additionalProperties: false
+      properties:
+        roots:
+          type: array
+          items:
+            type: string
+    TaskDraft:
+      type: object
+      required: [name, prompt]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        prompt:
+          type: string
+        source_dir:
+          type: string
+        verifier_root:
+          type: string
+        base_commit:
+          type: string
+    TaskPatch:
+      type: object
+      required: [name, draft_json, row_version]
+      properties:
+        name:
+          type: string
+        draft_json:
+          type: string
+        row_version:
+          type: integer
+    ProfileBody:
+      type: object
+      required: [adapter, display_name]
+      properties:
+        adapter:
+          type: string
+          enum: [fixture, cursor, grok, opencode]
+        model:
+          type: string
+        fake_mode:
+          type: string
+        executor:
+          type: string
+        network:
+          type: string
+        display_name:
+          type: string
+        executable:
+          type: string
+        approve_tools:
+          type: boolean
+    ProfileDraft:
+      type: object
+      required: [name, account_id, profile]
+      properties:
+        name:
+          type: string
+        account_id:
+          type: string
+        profile:
+          $ref: '#/components/schemas/ProfileBody'
+    DoctorRequest:
+      type: object
+      properties:
+        allow_model_call:
+          type: boolean
+    ExperimentPlan:
+      type: object
+      required: [task_version_ids, profile_version_ids, repetitions]
+      properties:
+        mode:
+          type: string
+        task_version_ids:
+          type: array
+          items:
+            type: string
+        profile_version_ids:
+          type: array
+          items:
+            type: string
+        repetitions:
+          type: integer
+          minimum: 1
+          maximum: 30
+        protocol:
+          type: string
+    RetryRequest:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          minLength: 1
+    Review:
+      type: object
+      required: [kind, body]
+      properties:
+        kind:
+          type: string
+        body:
+          type: string
+    HarborSubset:
+      type: object
+      required: [schema_version, name, instruction]
+      properties:
+        schema_version:
+          type: string
+        name:
+          type: string
+        instruction:
+          type: string
+        environment:
+          type: object
+          additionalProperties: true
+    WebhookBody:
+      type: object
+      additionalProperties: true
+    AccountDraft:
+      type: object
+      required: [auth_kind, credential_ref]
+      properties:
+        auth_kind:
+          type: string
+        credential_ref:
+          type: string
+        concurrency:
+          type: integer
+    EnvironmentDraft:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        executor:
+          type: string
+        network:
+          type: string

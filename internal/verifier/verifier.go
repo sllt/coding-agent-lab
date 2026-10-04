@@ -146,10 +146,18 @@ func copyHidden(root, dest string) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		rel, err := filepath.Rel(hidden, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
 			return nil
 		}
-		return copyFile(path, filepath.Join(dest, d.Name()))
+		target := filepath.Join(dest, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFile(path, target)
 	})
 }
 

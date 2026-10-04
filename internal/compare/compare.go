@@ -18,6 +18,9 @@ type Input struct {
 	Verdict       string
 	Terminal      bool
 	ModelMismatch bool
+	// Assisted is the latest retry verdict when a later attempt exists.
+	// It is not counted in Pass/Fail, which stay on the first physical attempt.
+	Assisted string
 }
 
 type Cell struct {
@@ -28,6 +31,8 @@ type Cell struct {
 	Inconclusive     int    `json:"inconclusive"`
 	Unverified       int    `json:"unverified"`
 	Incomplete       int    `json:"incomplete"`
+	AssistedPass     int    `json:"assisted_pass"`
+	AssistedFail     int    `json:"assisted_fail"`
 }
 
 type Board struct {
@@ -41,6 +46,8 @@ type Board struct {
 	Note          string   `json:"note"`
 	Paired        int      `json:"paired"`
 	TaskCount     int      `json:"task_count"`
+	Executor      string   `json:"executor"`
+	Network       string   `json:"network"`
 }
 
 func Boards(rows []Input, taskCount int) ([]Board, error) {
@@ -71,6 +78,7 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 			g = &group{board: Board{
 				TaskVersionID: row.TaskID, ComparisonKey: cmp.Key, Comparable: cmp.Comparable, Reasons: cmp.Reasons,
 				Exploratory: exploratory, Method: "counts-v1", Note: note, TaskCount: taskCount,
+				Executor: row.Executor, Network: row.Network,
 			}, seen: map[string]int{}}
 			groups[key] = g
 			order = append(order, key)
@@ -99,6 +107,12 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 			cell.Inconclusive++
 		default:
 			cell.Unverified++
+		}
+		switch domain.Verdict(row.Assisted) {
+		case domain.VerdictPass:
+			cell.AssistedPass++
+		case domain.VerdictFail:
+			cell.AssistedFail++
 		}
 	}
 	var out []Board

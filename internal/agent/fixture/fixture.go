@@ -60,6 +60,16 @@ func Run() int {
 		_, _ = os.Stdout.Write(buf)
 		_, _ = os.Stdout.Write([]byte("\n"))
 		return 0
+	case "auth":
+		fmt.Fprintln(os.Stderr, "authentication failed: not logged in")
+		return 1
+	case "noise":
+		fmt.Println(`{"state":"quarantined","type":"CleanupCompleted"}`)
+		fmt.Println("done")
+		return 0
+	case "usage":
+		fmt.Println(`{"usage":{"input_tokens":3,"output_tokens":4}}`)
+		return 0
 	case "copy":
 		src := os.Getenv("AGENTLAB_SOLUTION_DIR")
 		if src == "" {

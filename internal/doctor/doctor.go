@@ -20,10 +20,12 @@ type Report struct {
 	ModelCall    string   `json:"model_call"`
 	Network      string   `json:"network"`
 	Executor     string   `json:"executor"`
-	StaticPassed bool     `json:"static_passed"`
-	Verified     bool     `json:"verified"`
-	Blockers     []string `json:"blockers"`
-	Note         string   `json:"note"`
+	StaticPassed     bool     `json:"static_passed"`
+	Verified         bool     `json:"verified"`
+	SupportsHeadless bool     `json:"supports_headless"`
+	HeadlessProbed   bool     `json:"headless_probed"`
+	Blockers         []string `json:"blockers"`
+	Note             string   `json:"note"`
 }
 
 func Static(ctx context.Context, adapterName, executable, modelID string, allowModelCall bool) Report {
@@ -40,8 +42,9 @@ func Static(ctx context.Context, adapterName, executable, modelID string, allowM
 		report.CLIVersion = "fixture"
 		report.Executor = "native-trusted"
 		report.StaticPassed = len(report.Blockers) == 0
-		report.Verified = report.StaticPassed
-		report.Note = "本地假 CLI，不调用模型供应商"
+		// A static look at the fixture is not an execution fixture. verified stays false.
+		report.Verified = false
+		report.Note = "本地假 CLI，不调用模型供应商。静态检查不能标成 verified，只有执行夹具通过才算已验证。"
 		return report
 	}
 	if executable == "" {
@@ -77,9 +80,22 @@ func Static(ctx context.Context, adapterName, executable, modelID string, allowM
 		report.Blockers = append(report.Blockers, "model_call_not_authorized_in_this_build")
 		report.ModelCall = "refused"
 	}
-	report.StaticPassed = !has(report.Blockers, "cli_not_found") && !has(report.Blockers, "placeholder_field") && !has(report.Blockers, "decoder_failed") && !has(report.Blockers, "unknown_adapter")
-	report.Verified = false
-	report.Note = "静态检查不能证明模型可调用或额度可共享"
+	caps, err := ad.Probe(ctx, agent.ProbeRequest{Executable: report.Executable, ModelID: modelID})
+	if err != nil || !caps.Probed {
+		report.SupportsHeadless = false
+		report.HeadlessProbed = false
+		report.Note = "静态检查不能证明模型可调用或额度可共享。能力未经探测，无头模式不会被写成已支持。"
+	} else {
+		report.SupportsHeadless = caps.SupportsHeadless
+		report.HeadlessProbed = true
+		report.Verified = caps.Verified
+		report.Note = "静态检查不能证明模型可调用或额度可共享"
+	}
+	// version probe failure and a refused model call both block publish.
+	report.StaticPassed = len(report.Blockers) == 0
+	if !caps.Verified {
+		report.Verified = false
+	}
 	return report
 }
 

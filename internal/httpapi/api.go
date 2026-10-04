@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sllt/pi/pkg/pi"
@@ -38,10 +40,17 @@ type csrfKey struct{}
 type webhookBodyKey struct{}
 type webhookSigKey struct{}
 type webhookDedupeKey struct{}
+type rawBodyKey struct{}
 
 type API struct {
-	svc *app.Service
+	svc     *app.Service
+	streams atomic.Int32
 }
+
+var maxEventStreams int32 = 32
+
+var heartbeatEvery = 2 * time.Second
+var backupWait = 20 * time.Second
 
 func New(svc *app.Service) *API { return &API{svc: svc} }
 
@@ -53,6 +62,7 @@ func (a *API) Register(appPi *pi.App) {
 	appPi.GET("/api/v1/overview", a.overview)
 	appPi.POST("/api/v1/projects", a.createProject)
 	appPi.GET("/api/v1/projects", a.listProjects)
+	appPi.POST("/api/v1/projects/{id}/roots", a.setRoots)
 	appPi.POST("/api/v1/projects/{id}/tasks", a.createTask)
 	appPi.GET("/api/v1/projects/{id}/tasks", a.listTasks)
 	appPi.PATCH("/api/v1/tasks/{id}", a.patchTask)
@@ -91,17 +101,21 @@ func (a *API) Register(appPi *pi.App) {
 
 func (a *API) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/events") {
+			w.Header().Set("Cache-Control", "no-cache, no-transform")
+			w.Header().Set("X-Accel-Buffering", "no")
+		}
+		var raw []byte
+		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			raw, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+		}
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			a.serveStatic(w, r)
 			return
 		}
 		if r.URL.Path == "/api/v1/webhooks" && r.Method == http.MethodPost {
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-			if err != nil {
-				writeHTTP(w, r, http.StatusBadRequest, "bad_request", "请求无法处理")
-				return
-			}
-			ctx := context.WithValue(r.Context(), webhookBodyKey{}, body)
+			ctx := context.WithValue(r.Context(), webhookBodyKey{}, raw)
 			ctx = context.WithValue(ctx, webhookSigKey{}, r.Header.Get("X-Agentlab-Signature"))
 			ctx = context.WithValue(ctx, webhookDedupeKey{}, r.Header.Get("X-Agentlab-Dedupe"))
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -116,7 +130,7 @@ func (a *API) Wrap(next http.Handler) http.Handler {
 			writeHTTP(w, r, http.StatusUnauthorized, "unauthenticated", "需要登录")
 			return
 		}
-		_, csrf, err := a.svc.Store.Session(r.Context(), app.HashToken(token))
+		userID, csrf, err := a.svc.Store.Session(r.Context(), app.HashToken(token))
 		if err != nil {
 			writeHTTP(w, r, http.StatusUnauthorized, "unauthenticated", "需要登录")
 			return
@@ -125,11 +139,12 @@ func (a *API) Wrap(next http.Handler) http.Handler {
 			writeHTTP(w, r, http.StatusForbidden, "csrf", "缺少或错误的 CSRF 令牌")
 			return
 		}
-		ctx := context.WithValue(r.Context(), userKey{}, "local")
+		ctx := context.WithValue(r.Context(), userKey{}, userID)
 		ctx = context.WithValue(ctx, tokenKey{}, token)
 		ctx = context.WithValue(ctx, csrfKey{}, csrf)
 		ctx = context.WithValue(ctx, idemKey{}, r.Header.Get("Idempotency-Key"))
 		ctx = context.WithValue(ctx, lastKey{}, r.Header.Get("Last-Event-ID"))
+		ctx = context.WithValue(ctx, rawBodyKey{}, raw)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -189,6 +204,10 @@ func (a *API) fromErr(c *pi.Context, err error) (any, error) {
 		return ok(c, http.StatusOK, map[string]any{})
 	case errors.Is(err, sqlite.ErrNotFound):
 		return fail(c, http.StatusNotFound, "not_found", "资源不存在")
+	case errors.Is(err, app.ErrAdminExists):
+		return fail(c, http.StatusConflict, "conflict", "管理员已经存在")
+	case errors.Is(err, sqlite.ErrFinished):
+		return fail(c, http.StatusConflict, "conflict", "已经结束，取消不会再执行")
 	case errors.Is(err, sqlite.ErrIdempotent), errors.Is(err, sqlite.ErrConflict):
 		return fail(c, http.StatusConflict, "conflict", "状态、版本或幂等键冲突")
 	case errors.Is(err, sqlite.ErrCapacity):
@@ -312,16 +331,35 @@ func (a *API) listProjects(c *pi.Context) (any, error) {
 }
 
 func (a *API) createTask(c *pi.Context) (any, error) {
+	raw, _ := c.Value(rawBodyKey{}).([]byte)
 	var body app.TaskSnapshot
-	if err := c.Bind(&body); err != nil || strings.TrimSpace(body.Name) == "" || strings.TrimSpace(body.Prompt) == "" {
-		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
+	if err := domain.UnmarshalStrict(raw, &body); err != nil || strings.TrimSpace(body.Name) == "" || strings.TrimSpace(body.Prompt) == "" {
+		return fail(c, 422, "unexecutable", "草稿含未知字段、重复键，或缺少名称和提示词")
 	}
-	raw, _ := json.Marshal(body)
-	task, err := a.svc.Store.CreateTask(c, c.PathParam("id"), body.Name, string(raw))
+	canon, err := json.Marshal(body)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	task, err := a.svc.Store.CreateTask(c, c.PathParam("id"), body.Name, string(canon))
 	if err != nil {
 		return a.fromErr(c, err)
 	}
 	return ok(c, http.StatusCreated, task)
+}
+
+func (a *API) setRoots(c *pi.Context) (any, error) {
+	var body struct {
+		Roots []string `json:"roots"`
+	}
+	raw, _ := c.Value(rawBodyKey{}).([]byte)
+	if err := domain.UnmarshalStrict(raw, &body); err != nil {
+		return fail(c, 422, "unexecutable", "允许根必须是 roots 字符串数组")
+	}
+	if err := a.svc.Store.SetAllowedRoots(c, c.PathParam("id"), body.Roots); err != nil {
+		return a.fromErr(c, err)
+	}
+	a.audit(c, "register_root", c.PathParam("id"))
+	return ok(c, http.StatusOK, map[string]any{"roots": body.Roots})
 }
 
 func (a *API) listTasks(c *pi.Context) (any, error) {
@@ -356,6 +394,7 @@ func (a *API) publishTask(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
+	a.audit(c, "publish_task", version.ID)
 	return ok(c, http.StatusAccepted, version)
 }
 
@@ -439,7 +478,10 @@ func (a *API) doctor(c *pi.Context) (any, error) {
 	}
 	var snap app.ProfileSnapshot
 	_ = json.Unmarshal([]byte(profile.DraftJSON), &snap)
-	report := doctor.Static(c, snap.Adapter, "", snap.Model, body.AllowModelCall)
+	report := doctor.Static(c, snap.Adapter, snap.Executable, snap.Model, body.AllowModelCall)
+	if snap.Adapter == "cursor" && !snap.ApproveTools {
+		report.Note = strings.TrimSpace(report.Note + " 未批准 --force，Cursor 不能写文件。")
+	}
 	return ok(c, http.StatusOK, report)
 }
 
@@ -448,6 +490,7 @@ func (a *API) publishProfile(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
+	a.audit(c, "publish_profile", version.ID)
 	return ok(c, http.StatusAccepted, version)
 }
 
@@ -503,6 +546,9 @@ func (a *API) previewExperiment(c *pi.Context) (any, error) {
 	if err := c.Bind(&body); err != nil {
 		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
 	}
+	if body.Repetitions <= 0 || body.Repetitions > domain.MaxRepetitions {
+		return fail(c, 422, "unexecutable", "重复次数必须在 1 到 30 之间")
+	}
 	n := domain.TrialCount(len(body.TaskVersionIDs), len(body.ProfileVersionIDs), body.Repetitions)
 	return ok(c, http.StatusOK, map[string]any{
 		"trial_count": n,
@@ -554,7 +600,8 @@ func (a *API) getExperiment(c *pi.Context) (any, error) {
 		return a.fromErr(c, err)
 	}
 	exp = a.projectState(c, exp)
-	return ok(c, http.StatusOK, map[string]any{"experiment": exp, "trials": a.withCleanup(c, trials), "summary": summarize(trials)})
+	exports := a.exportViews(c, exp.ID)
+	return ok(c, http.StatusOK, map[string]any{"experiment": exp, "trials": a.withCleanup(c, trials), "summary": a.summarizeFirst(c, trials), "exports": exports})
 }
 
 func (a *API) projectState(c *pi.Context, exp sqlite.Experiment) sqlite.Experiment {
@@ -566,7 +613,11 @@ func (a *API) projectState(c *pi.Context, exp sqlite.Experiment) sqlite.Experime
 	for i, trial := range trials {
 		states[i] = domain.ExecutionState(trial.ExecutionState)
 	}
-	exp.State = string(domain.RollupExecution(states))
+	next := string(domain.RollupExecution(states))
+	if exp.State != next {
+		_ = a.svc.Store.SetExperimentState(c, exp.ID, next)
+		exp.State = next
+	}
 	return exp
 }
 
@@ -629,7 +680,7 @@ func (a *API) retryTrial(c *pi.Context) (any, error) {
 	if limit <= 0 {
 		limit = 1
 	}
-	attempt, err := a.svc.Store.CreateAttempt(c, trial.ID, account, `{"executor":"native-trusted"}`, body.Reason, limit, 1)
+	attempt, err := a.svc.Store.CreateAttempt(c, trial.ID, account, app.NativeRuntime(), body.Reason, limit, 1)
 	if err != nil {
 		return a.fromErr(c, err)
 	}
@@ -763,6 +814,10 @@ func (a *API) events(c *pi.Context) (any, error) {
 	if _, err := a.svc.Store.GetAttempt(c, id); err != nil {
 		return a.fromErr(c, err)
 	}
+	if a.streams.Add(1) > maxEventStreams {
+		a.streams.Add(-1)
+		return fail(c, http.StatusTooManyRequests, "capacity", "事件连接已达上限")
+	}
 	last := parseLast(c.Value(lastKey{}))
 	path := filepath.Join(a.svc.DataDir, "attempts", id, "events.ndjson")
 	once := c.Param("once") == "1"
@@ -770,6 +825,7 @@ func (a *API) events(c *pi.Context) (any, error) {
 		StatusCode:  http.StatusOK,
 		ContentType: "text/event-stream",
 		Run: func(ctx context.Context, w io.Writer) error {
+			defer a.streams.Add(-1)
 			return writeEvents(ctx, w, id, path, last, once)
 		},
 	}, nil
@@ -798,17 +854,39 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 		}
 		var snap app.ProfileSnapshot
 		_ = json.Unmarshal([]byte(pv.SnapshotJSON), &snap)
-		if snap.Executor == "" {
-			snap.Executor = "native-trusted"
+		executor, network := snap.Executor, snap.Network
+		verdict := trial.Verdict
+		terminal := domain.ExecutionState(trial.ExecutionState).Terminal()
+		assisted := ""
+		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil && len(attempts) > 0 {
+			verdict = attempts[0].Verdict
+			terminal = domain.ExecutionState(attempts[0].State).Terminal()
+			var runtime struct {
+				Executor string `json:"executor"`
+				Network  string `json:"network"`
+			}
+			_ = json.Unmarshal([]byte(attempts[len(attempts)-1].RuntimeJSON), &runtime)
+			if runtime.Executor != "" {
+				executor = runtime.Executor
+			}
+			if runtime.Network != "" {
+				network = runtime.Network
+			}
+			if len(attempts) > 1 && domain.ExecutionState(attempts[len(attempts)-1].State).Terminal() {
+				assisted = attempts[len(attempts)-1].Verdict
+			}
 		}
-		if snap.Network == "" {
-			snap.Network = "unrestricted"
+		if executor == "" || executor == "docker" {
+			executor = "native-trusted"
+		}
+		if network == "" || network == "restricted" {
+			network = "unrestricted"
 		}
 		tasks[trial.TaskVersionID] = struct{}{}
 		rows = append(rows, compare.Input{
 			Mode: exp.Mode, Protocol: exp.ProtocolJSON, TaskID: trial.TaskVersionID, TaskDigest: tv.Digest,
 			ProfileID: trial.ProfileVersionID, ProfileName: snap.DisplayName, ProfileDig: pv.Digest,
-			Executor: snap.Executor, Network: snap.Network, Verdict: trial.Verdict, Terminal: domain.ExecutionState(trial.ExecutionState).Terminal(),
+			Executor: executor, Network: network, Verdict: verdict, Terminal: terminal, Assisted: assisted,
 		})
 	}
 	boards, err := compare.Boards(rows, len(tasks))
@@ -836,6 +914,24 @@ func (a *API) settings(c *pi.Context) (any, error) {
 func (a *API) backup(c *pi.Context) (any, error) {
 	a.svc.SetMaintenance(true)
 	defer a.svc.SetMaintenance(false)
+	deadline := time.Now().Add(backupWait)
+	for {
+		n, err := a.svc.Store.CountInFlight(c)
+		if err != nil {
+			return a.fromErr(c, err)
+		}
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) || c.Err() != nil {
+			return fail(c, http.StatusConflict, "conflict", "仍有未结束的 Attempt，未生成备份")
+		}
+		select {
+		case <-c.Done():
+			return fail(c, http.StatusConflict, "conflict", "仍有未结束的 Attempt，未生成备份")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 	if err := os.MkdirAll(a.svc.DataDir, 0o755); err != nil {
 		return a.fromErr(c, err)
 	}
@@ -846,7 +942,8 @@ func (a *API) backup(c *pi.Context) (any, error) {
 	if err := a.svc.Store.Backup(c, dest); err != nil {
 		return fail(c, http.StatusServiceUnavailable, "backup_failed", "无法生成一致性备份")
 	}
-	return ok(c, http.StatusOK, map[string]any{"path": dest, "note": "备份在维护模式下生成。活跃任务不会被假装成已清理。"})
+	a.audit(c, "backup", dest)
+	return ok(c, http.StatusOK, map[string]any{"path": dest, "note": "备份在活跃 Attempt 都结束后生成。没有把仍在运行的任务记成已清理。"})
 }
 
 func (a *API) importHarbor(c *pi.Context) (any, error) {
@@ -862,9 +959,9 @@ func (a *API) importHarbor(c *pi.Context) (any, error) {
 }
 
 func (a *API) webhook(c *pi.Context) (any, error) {
-	secret, err := a.webhookSecret()
+	secret, err := a.readWebhookSecret()
 	if err != nil {
-		return fail(c, http.StatusServiceUnavailable, "unavailable", "webhook 密钥不可用")
+		return fail(c, http.StatusUnauthorized, "unauthenticated", "webhook 密钥未配置")
 	}
 	body, _ := c.Value(webhookBodyKey{}).([]byte)
 	sig, _ := c.Value(webhookSigKey{}).(string)
@@ -874,6 +971,9 @@ func (a *API) webhook(c *pi.Context) (any, error) {
 	}
 	sum := sha256.Sum256(body)
 	dup, err := a.svc.Store.AcceptWebhook(c, dedupe, hex.EncodeToString(sum[:]))
+	if errors.Is(err, sqlite.ErrConflict) {
+		return fail(c, http.StatusConflict, "conflict", "同一去重键对应了不同正文")
+	}
 	if err != nil {
 		return a.fromErr(c, err)
 	}
@@ -927,7 +1027,11 @@ func (a *API) exportExperiment(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	return ok(c, http.StatusAccepted, map[string]any{"artifact_id": art.ID, "bytes": art.Bytes})
+	a.audit(c, "export", exp.ID)
+	return ok(c, http.StatusAccepted, map[string]any{
+		"artifact_id": art.ID, "bytes": art.Bytes,
+		"download_path": "/api/v1/artifacts/" + art.ID + "/download",
+	})
 }
 
 func (a *API) underData(path string) bool {
@@ -990,11 +1094,19 @@ func insideDir(root, target string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+func (a *API) readWebhookSecret() ([]byte, error) {
+	b, err := os.ReadFile(filepath.Join(a.svc.DataDir, "webhook.secret"))
+	if err != nil || len(b) == 0 {
+		return nil, os.ErrNotExist
+	}
+	return b, nil
+}
+
 func (a *API) webhookSecret() ([]byte, error) {
-	path := filepath.Join(a.svc.DataDir, "webhook.secret")
-	if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+	if b, err := a.readWebhookSecret(); err == nil {
 		return b, nil
 	}
+	path := filepath.Join(a.svc.DataDir, "webhook.secret")
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, err
@@ -1020,15 +1132,24 @@ func formula(tasks, profiles, repetitions int) string {
 	return strconv.Itoa(tasks) + " 个任务 × " + strconv.Itoa(profiles) + " 个配置 × " + strconv.Itoa(repetitions) + " 次 = " + strconv.Itoa(domain.TrialCount(tasks, profiles, repetitions)) + " 个 Trial"
 }
 
-func summarize(trials []sqlite.Trial) map[string]any {
-	var done, pass, fail, inc, unver, incomplete int
+func (a *API) summarizeFirst(c *pi.Context, trials []sqlite.Trial) map[string]any {
+	var done, pass, fail, inc, unver, incomplete, assisted int
 	for _, trial := range trials {
-		if !domain.ExecutionState(trial.ExecutionState).Terminal() {
+		state := trial.ExecutionState
+		verdict := trial.Verdict
+		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil && len(attempts) > 0 {
+			state = attempts[0].State
+			verdict = attempts[0].Verdict
+			if len(attempts) > 1 && attempts[len(attempts)-1].Verdict == string(domain.VerdictPass) {
+				assisted++
+			}
+		}
+		if !domain.ExecutionState(state).Terminal() {
 			incomplete++
 			continue
 		}
 		done++
-		switch domain.Verdict(trial.Verdict) {
+		switch domain.Verdict(verdict) {
 		case domain.VerdictPass:
 			pass++
 		case domain.VerdictFail:
@@ -1042,8 +1163,35 @@ func summarize(trials []sqlite.Trial) map[string]any {
 	return map[string]any{
 		"planned": len(trials), "terminal": done, "incomplete": incomplete,
 		"pass": pass, "fail": fail, "inconclusive": inc, "unverified": unver,
-		"note": "分母是计划中的 Trial。未完成样本单独列出，不会被算成失败或通过。",
+		"assisted_pass": assisted,
+		"note":         "通过数来自每个 Trial 的第一次物理执行。人工重试另计，不会进入首 Attempt 通过率。未完成样本单独列出。",
 	}
+}
+
+func (a *API) exportViews(c *pi.Context, experimentID string) []map[string]any {
+	items, err := a.svc.Store.ListArtifacts(c, experimentID)
+	if err != nil || len(items) == 0 {
+		return []map[string]any{}
+	}
+	out := []map[string]any{}
+	for _, item := range items {
+		if item.Kind != "export" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id": item.ID, "bytes": item.Bytes, "status": item.Status,
+			"download_path": "/api/v1/artifacts/" + item.ID + "/download",
+		})
+	}
+	return out
+}
+
+func (a *API) audit(c *pi.Context, action, resource string) {
+	actor, _ := c.Value(userKey{}).(string)
+	if actor == "" {
+		actor = "local"
+	}
+	_ = a.svc.Store.Audit(c, actor, action, resource, `{}`)
 }
 
 func parseLast(v any) int64 {
@@ -1089,12 +1237,18 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 		return nil
 	}
 	ticker := time.NewTicker(200 * time.Millisecond)
+	heart := time.NewTicker(heartbeatEvery)
 	defer ticker.Stop()
+	defer heart.Stop()
 	seen := len(lines)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-heart.C:
+			if _, err = io.WriteString(w, ": heartbeat\n\n"); err != nil {
+				return err
+			}
 		case <-ticker.C:
 			body, err = os.ReadFile(path)
 			if err != nil {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Route, BrowserRouter, Routes } from 'react-router-dom'
+import { Link, NavLink, Route, BrowserRouter, Routes } from 'react-router-dom'
 import { api } from './api.ts'
 import { Notice } from './components/ui.tsx'
 import { Compare } from './pages/Compare.tsx'
@@ -36,8 +36,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="min-h-screen md:grid md:grid-cols-[220px_1fr]">
-        <nav className="flex gap-3 overflow-x-auto border-b border-[#1c1915]/10 bg-[#ebe4d8] px-4 py-3 md:flex-col md:border-b-0 md:border-r">
-          <span className="hidden text-sm md:block">Coding Agent Lab</span>
+        <nav className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-[#1c1915]/10 bg-[#ebe4d8] px-3 py-3 md:flex-col md:items-stretch md:border-b-0 md:border-r">
+          <span className="text-sm font-semibold">Coding Agent Lab</span>
           {links.map(([to, name]) => (
             <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => isActive ? 'text-sm underline' : 'text-sm'}>{name}</NavLink>
           ))}
@@ -54,9 +54,20 @@ export default function App() {
             <Route path="/compare" element={<Compare />} />
             <Route path="/profiles" element={<Profiles />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Missing />} />
           </Routes>
         </main>
       </div>
     </BrowserRouter>
+  )
+}
+
+function Missing() {
+  return (
+    <div className="flex flex-col gap-3">
+      <h1 className="text-2xl">没有这个页面</h1>
+      <Notice>这个地址不在工作台里。可以从概览重新开始。</Notice>
+      <Link className="text-sm underline" to="/">回到概览</Link>
+    </div>
   )
 }

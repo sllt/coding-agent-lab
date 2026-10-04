@@ -205,11 +205,15 @@ func TestStaleFenceIsAudited(t *testing.T) {
 func TestBaselineMismatchBlocksPublish(t *testing.T) {
 	ctx := context.Background()
 	svc := newLab(t)
-	project, err := svc.Store.CreateProject(ctx, "坏任务", `{"kind":"local"}`)
+	dir := t.TempDir()
+	absRoot, err := filepath.Abs(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
+	project, err := svc.Store.CreateProject(ctx, "坏任务", `{"kind":"local","allowed_roots":["`+absRoot+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/empty\n\ngo 1.24.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -300,13 +304,18 @@ func newLab(t *testing.T) *Service {
 func seedTrial(t *testing.T, svc *Service, root, mode string) string {
 	t.Helper()
 	ctx := context.Background()
-	project, err := svc.Store.CreateProject(ctx, "订单", `{"kind":"local"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	spec := `{"kind":"local"}`
 	snap := TaskSnapshot{Name: "分页", Prompt: "修复分页游标", SourceDir: root, VerifierRoot: root}
 	if root == "" {
 		snap = TaskSnapshot{Name: "空跑", Prompt: "不要调用模型", SourceDir: "", VerifierRoot: ""}
+	} else if abs, err := filepath.Abs(root); err == nil {
+		snap.SourceDir = abs
+		snap.VerifierRoot = abs
+		spec = `{"kind":"local","allowed_roots":["` + abs + `"]}`
+	}
+	project, err := svc.Store.CreateProject(ctx, "订单", spec)
+	if err != nil {
+		t.Fatal(err)
 	}
 	body, _ := json.Marshal(snap)
 	task, err := svc.Store.CreateTask(ctx, project.ID, snap.Name, string(body))

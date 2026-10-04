@@ -15,12 +15,16 @@ func TestStaticDoctorDoesNotCallAModel(t *testing.T) {
 		t.Fatalf("blockers %v", missing.Blockers)
 	}
 	fixture := Static(ctx, "fixture", "agentlab", "fixture-local", false)
-	if !fixture.StaticPassed || !fixture.Verified || fixture.ModelCall == "passed" {
+	if !fixture.StaticPassed || fixture.Verified || fixture.ModelCall == "passed" {
 		t.Fatalf("fixture %+v", fixture)
 	}
 	refused := Static(ctx, "fixture", "agentlab", "fixture-local", true)
-	if refused.ModelCall != "not_run" || !refused.Verified {
-		// fixture returns before the allowModelCall branch
+	if refused.ModelCall != "not_run" || refused.Verified {
+		// fixture returns before the allowModelCall branch and is not verified
+	}
+	versionFail := Static(ctx, "grok", "/bin/false", "grok-model", false)
+	if versionFail.StaticPassed || !has(versionFail.Blockers, "version_probe_failed") || versionFail.SupportsHeadless {
+		t.Fatalf("version probe %+v", versionFail)
 	}
 	real := Static(ctx, "grok", "grok", "grok-model", true)
 	if real.ModelCall != "refused" && !has(real.Blockers, "cli_not_found") {

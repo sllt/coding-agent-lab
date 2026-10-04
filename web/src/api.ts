@@ -1,3 +1,5 @@
+import { requestJSON } from './generated/client.ts'
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -9,19 +11,14 @@ export class ApiError extends Error {
 export const api = {
   csrf: '',
   async request<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
-    const head: Record<string, string> = { ...headers }
-    if (body !== undefined) head['Content-Type'] = 'application/json'
-    if (this.csrf && method !== 'GET') head['X-CSRF-Token'] = this.csrf
-    const res = await fetch(path, {
-      method,
-      headers: head,
-      credentials: 'include',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    const text = await res.text()
-    const json = text ? JSON.parse(text) as { data?: T; error?: { message?: string } } : {}
-    if (!res.ok) throw new ApiError(res.status, json.error?.message || '请求失败')
-    return json.data as T
+    try {
+      return await requestJSON<T>({ method, path, body, headers, csrf: this.csrf })
+    } catch (err) {
+      if (err instanceof ApiError) throw err
+      const message = err instanceof Error ? err.message : '请求失败'
+      const status = message.includes('401') ? 401 : 0
+      throw new ApiError(status, message)
+    }
   },
 }
 

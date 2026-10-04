@@ -88,8 +88,11 @@ func TestLoopbackBrowserOriginIsNotRejectedAsCORS(t *testing.T) {
 		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "CORS origin") {
 			t.Fatalf("origin %s status %d body %s", origin, rec.Code, rec.Body.String())
 		}
-		if rec.Header().Get("Access-Control-Allow-Origin") != origin {
-			t.Fatalf("origin %s allow header %q", origin, rec.Header().Get("Access-Control-Allow-Origin"))
+		if rec.Header().Get("Access-Control-Allow-Origin") != "" || rec.Header().Get("Access-Control-Allow-Credentials") == "true" {
+			t.Fatalf("origin %s should not enable CORS, allow %q credentials %q", origin, rec.Header().Get("Access-Control-Allow-Origin"), rec.Header().Get("Access-Control-Allow-Credentials"))
+		}
+		if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "default-src 'self'") {
+			t.Fatalf("missing content security policy: %q", rec.Header().Get("Content-Security-Policy"))
 		}
 	}
 }

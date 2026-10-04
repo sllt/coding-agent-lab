@@ -4,16 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/sllt/agentlab/internal/domain"
 )
 
 var (
-	ErrNotFound   = errors.New("not found")
-	ErrIdempotent = errors.New("idempotency conflict")
-	ErrCapacity   = errors.New("capacity")
+	ErrNotFound        = errors.New("not found")
+	ErrIdempotent      = errors.New("idempotency conflict")
+	ErrCapacity        = errors.New("capacity")
+	ErrAccountBlocked  = errors.New("account blocked")
+	ErrFinished        = errors.New("already finished")
 )
 
 type Project struct {
@@ -379,7 +380,7 @@ func (s *Store) CreateAttempt(ctx context.Context, trialID, accountID, runtimeJS
 			return err
 		}
 		if blocked != "" {
-			return fmt.Errorf("account blocked: %s", blocked)
+			return ErrAccountBlocked
 		}
 		if accountLimit <= 0 {
 			accountLimit = accountCap

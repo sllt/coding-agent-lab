@@ -79,9 +79,8 @@ func Build(cfg Config) (*Runtime, error) {
 			"HTTP_ENABLED":           "false",
 			"GRPC_ENABLED":           "false",
 			"METRICS_ENABLED":        "false",
-			"CORS_ALLOWED_ORIGINS":   loopbackOrigins(cfg.Addr),
-			"CORS_ALLOWED_HEADERS":   "X-CSRF-Token, Idempotency-Key, Last-Event-ID",
-			"CORS_ALLOW_CREDENTIALS": "true",
+			"CORS_ALLOWED_ORIGINS":   "",
+			"CORS_ALLOW_CREDENTIALS": "false",
 		}),
 	}
 	for _, r := range resources {
@@ -240,6 +239,9 @@ func secure(listenAddr string, next http.Handler, ids *requestIDs) http.Handler 
 		}
 		ctx := context.WithValue(r.Context(), idKey{}, id)
 		r = r.WithContext(ctx)
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		sw := &statusWriter{ResponseWriter: w, id: id}
 		if !hostAllowed(r.Host) {
 			writeErr(sw, id, http.StatusBadRequest, "invalid_host", "Host 不在允许的本机地址内")
@@ -249,6 +251,9 @@ func secure(listenAddr string, next http.Handler, ids *requestIDs) http.Handler 
 			writeErr(sw, id, http.StatusForbidden, "invalid_origin", "Origin 不被接受")
 			return
 		}
+		// CORS stays off. A same-origin browser still sends Origin; drop it after
+		// the host check so the framework does not reflect an allow-origin header.
+		r.Header.Del("Origin")
 		next.ServeHTTP(sw, r)
 	})
 }
@@ -267,26 +272,7 @@ func newID() string {
 	return "req-" + hex.EncodeToString(b[:])
 }
 
-func loopbackOrigins(addr string) string {
-	_, port, err := splitHostPortLoose(addr)
-	if err != nil || port == "" || port == "0" {
-		port = "43117"
-	}
-	ports := []string{port, "43118"}
-	var out []string
-	seen := map[string]struct{}{}
-	for _, p := range ports {
-		for _, host := range []string{"127.0.0.1", "localhost"} {
-			origin := "http://" + host + ":" + p
-			if _, ok := seen[origin]; ok {
-				continue
-			}
-			seen[origin] = struct{}{}
-			out = append(out, origin)
-		}
-	}
-	return strings.Join(out, ",")
-}
+const contentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 
 func requireLoopback(addr string) error {
 	host, _, err := splitHostPortLoose(addr)

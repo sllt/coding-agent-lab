@@ -44,3 +44,17 @@ func TestBoardsDoNotRankOrScore(t *testing.T) {
 		t.Fatal("restricted network was treated as comparable")
 	}
 }
+
+func TestAssistedRetryDoesNotEnterTheFirstPassCount(t *testing.T) {
+	rows := []Input{
+		{Mode: domain.ModeAgentProfile, Protocol: "single-pass-v1", TaskID: "t1", TaskDigest: "task", ProfileID: "p1", ProfileName: "甲", ProfileDig: "a", Executor: "native-trusted", Network: "unrestricted", Verdict: "fail", Terminal: true, Assisted: "pass"},
+	}
+	boards, err := Boards(rows, 1)
+	if err != nil || len(boards) != 1 || len(boards[0].Cells) != 1 {
+		t.Fatalf("%+v %v", boards, err)
+	}
+	cell := boards[0].Cells[0]
+	if cell.Pass != 0 || cell.Fail != 1 || cell.AssistedPass != 1 {
+		t.Fatalf("retry polluted the first attempt: %+v", cell)
+	}
+}

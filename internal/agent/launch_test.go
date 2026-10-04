@@ -36,6 +36,12 @@ func TestLaunchArgsStayDistinctAndDoNotApproveByDefault(t *testing.T) {
 	if err != nil || !contains(oc.Args, "json") || contains(oc.Args, "--continue") {
 		t.Fatalf("opencode %v %v", oc.Args, err)
 	}
+	for _, probe := range []Adapter{Cursor{}, Grok{}, OpenCode{}} {
+		caps, err := probe.Probe(ctx, ProbeRequest{})
+		if err != nil || caps.Probed || caps.SupportsHeadless || caps.Verified {
+			t.Fatalf("%s probe claimed support %+v %v", probe.Name(), caps, err)
+		}
+	}
 	events, err := DecodeLine("stdout", []byte(`{"type":"Finished","verdict":"pass","usage":{"input_tokens":null}}`))
 	if err != nil {
 		t.Fatal(err)

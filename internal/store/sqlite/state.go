@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/sllt/agentlab/internal/domain"
 )
@@ -64,7 +65,7 @@ func (s *Store) RequestCancel(ctx context.Context, trialID string) (Trial, error
 			next = string(domain.ExecCancelled)
 			verdict = string(domain.VerdictUnverified)
 		} else if domain.ExecutionState(state).Terminal() {
-			return ErrConflict
+			return ErrFinished
 		} else {
 			next = string(domain.ExecCancelling)
 		}
@@ -242,19 +243,57 @@ func (s *Store) UserByName(ctx context.Context, username string) (id, hash strin
 	return id, hash, err
 }
 
+const (
+	sessionIdle     = 30 * time.Minute
+	sessionAbsolute = 12 * time.Hour
+)
+
 func (s *Store) CreateSession(ctx context.Context, userID, tokenHash, csrf string) error {
+	created := time.Now().UTC()
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO sessions(id, user_id, token_hash, csrf_secret, created_at, expires_at) VALUES(?,?,?,?,?,?)`, domain.NewID("ses"), userID, tokenHash, csrf, now(), "2099-01-01T00:00:00Z")
+		_, err := tx.ExecContext(ctx, `INSERT INTO sessions(id, user_id, token_hash, csrf_secret, created_at, expires_at, absolute_expires_at) VALUES(?,?,?,?,?,?,?)`,
+			domain.NewID("ses"), userID, tokenHash, csrf, created.Format(time.RFC3339Nano), created.Add(sessionIdle).Format(time.RFC3339Nano), created.Add(sessionAbsolute).Format(time.RFC3339Nano))
 		return err
 	})
 }
 
 func (s *Store) Session(ctx context.Context, tokenHash string) (userID, csrf string, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT user_id, csrf_secret FROM sessions WHERE token_hash=?`, tokenHash).Scan(&userID, &csrf)
+	var createdAt, expiresAt, absoluteAt string
+	err = s.db.QueryRowContext(ctx, `SELECT user_id, csrf_secret, created_at, expires_at, COALESCE(absolute_expires_at, '') FROM sessions WHERE token_hash=?`, tokenHash).Scan(&userID, &csrf, &createdAt, &expiresAt, &absoluteAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrNotFound
+		return "", "", ErrNotFound
 	}
-	return userID, csrf, err
+	if err != nil {
+		return "", "", err
+	}
+	nowTS := time.Now().UTC()
+	expires, expErr := time.Parse(time.RFC3339Nano, expiresAt)
+	created, createdErr := time.Parse(time.RFC3339Nano, createdAt)
+	if expErr != nil || createdErr != nil || !expires.After(nowTS) || expires.Year() >= 2099 {
+		_ = s.DeleteSession(ctx, tokenHash)
+		return "", "", ErrNotFound
+	}
+	absolute := created.Add(sessionAbsolute)
+	if absoluteAt != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, absoluteAt); err == nil {
+			absolute = parsed
+		}
+	}
+	if !absolute.After(nowTS) {
+		_ = s.DeleteSession(ctx, tokenHash)
+		return "", "", ErrNotFound
+	}
+	next := nowTS.Add(sessionIdle)
+	if next.After(absolute) {
+		next = absolute
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE sessions SET expires_at=? WHERE token_hash=?`, next.Format(time.RFC3339Nano), tokenHash)
+		return err
+	}); err != nil {
+		return "", "", err
+	}
+	return userID, csrf, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
@@ -590,16 +629,20 @@ func (s *Store) EventBounds(ctx context.Context, attemptID string) (minSeq, maxS
 func (s *Store) AcceptWebhook(ctx context.Context, dedupe, bodyDigest string) (bool, error) {
 	duplicate := false
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `INSERT INTO webhook_receipts(id, dedupe_key, body_digest, received_at) VALUES(?,?,?,?) ON CONFLICT(dedupe_key) DO NOTHING`, domain.NewID("wh"), dedupe, bodyDigest, now())
-		if err != nil {
+		var existing string
+		err := tx.QueryRowContext(ctx, `SELECT body_digest FROM webhook_receipts WHERE dedupe_key=?`, dedupe).Scan(&existing)
+		if err == nil {
+			if existing != bodyDigest {
+				return ErrConflict
+			}
+			duplicate = true
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		duplicate = n == 0
-		return nil
+		_, err = tx.ExecContext(ctx, `INSERT INTO webhook_receipts(id, dedupe_key, body_digest, received_at) VALUES(?,?,?,?)`, domain.NewID("wh"), dedupe, bodyDigest, now())
+		return err
 	})
 	return duplicate, err
 }
@@ -679,6 +722,115 @@ func (s *Store) ListEnvironments(ctx context.Context) ([]Environment, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetProject(ctx context.Context, id string) (Project, error) {
+	var p Project
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, source_spec_json, created_at FROM projects WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.SourceSpec, &p.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	return p, err
+}
+
+func (s *Store) SetAllowedRoots(ctx context.Context, projectID string, roots []string) error {
+	project, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	spec := map[string]any{}
+	if strings.TrimSpace(project.SourceSpec) != "" {
+		_ = json.Unmarshal([]byte(project.SourceSpec), &spec)
+	}
+	if spec == nil {
+		spec = map[string]any{}
+	}
+	if spec["kind"] == nil {
+		spec["kind"] = "local"
+	}
+	listed := make([]any, 0, len(roots))
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		listed = append(listed, root)
+	}
+	spec["allowed_roots"] = listed
+	body, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE projects SET source_spec_json=? WHERE id=?`, string(body), projectID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (s *Store) UpdateRuntime(ctx context.Context, attemptID, runtimeJSON string) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE attempts SET runtime_json=? WHERE id=?`, runtimeJSON, attemptID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (s *Store) CountInFlight(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM attempts WHERE state NOT IN ('completed','cancelled','aborted')`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) SetExperimentState(ctx context.Context, id, state string) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE experiments SET state=? WHERE id=?`, state, id)
+		return err
+	})
+}
+
+func (s *Store) RepairExperimentStates(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM experiments`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+			return rollupExperiment(ctx, tx, id)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) CountAudit(ctx context.Context, action, resource string) (int, error) {
