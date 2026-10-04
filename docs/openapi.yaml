@@ -1,0 +1,121 @@
+openapi: 3.0.3
+info:
+  title: Coding Agent Lab API
+  version: 1.0.0
+  description: |
+    本机控制面。成功响应是 {data, request_id}。错误响应是 {error:{code,message}, request_id}。
+    未知费用是 null，不是 0。取消返回 202，只表示意图已记录。
+servers:
+  - url: http://127.0.0.1:43117
+paths:
+  /api/v1/setup:
+    post:
+      summary: 创建本机管理员
+  /api/v1/login:
+    post:
+      summary: 登录并设置 HttpOnly 会话
+  /api/v1/logout:
+    post:
+      summary: 退出
+  /api/v1/session:
+    get:
+      summary: 读取当前会话和 CSRF
+  /api/v1/overview:
+    get:
+      summary: 运行、排队和阻塞计数
+  /api/v1/projects:
+    get:
+      summary: 项目分页
+    post:
+      summary: 登记项目
+  /api/v1/projects/{id}/tasks:
+    post:
+      summary: 创建任务草稿
+  /api/v1/tasks/{id}:
+    patch:
+      summary: 按 row_version 更新草稿
+  /api/v1/tasks/{id}/publish:
+    post:
+      summary: 预检并发布任务版本
+  /api/v1/tasks/{id}/versions:
+    get:
+      summary: 任务版本
+  /api/v1/profiles:
+    get:
+      summary: 配置草稿
+    post:
+      summary: 创建配置草稿
+  /api/v1/profiles/{id}/doctor:
+    post:
+      summary: 静态 doctor，不调用付费模型
+  /api/v1/profiles/{id}/publish:
+    post:
+      summary: 发布配置版本
+  /api/v1/experiments/preview:
+    post:
+      summary: 计算 Trial 数量，不启动
+  /api/v1/experiments:
+    post:
+      summary: 幂等提交实验计划
+    get:
+      summary: 实验列表
+  /api/v1/experiments/{id}:
+    get:
+      summary: 计划、Trial 和分母
+  /api/v1/experiments/{id}/export:
+    post:
+      summary: 导出，不含凭据和参考解
+  /api/v1/trials/{id}:
+    get:
+      summary: Trial 与历史 Attempt
+  /api/v1/trials/{id}/cancel:
+    post:
+      summary: 记录取消意图
+  /api/v1/trials/{id}/attempts:
+    post:
+      summary: 带原因的人工重试
+  /api/v1/attempts/{id}/events:
+    get:
+      summary: SSE，支持 Last-Event-ID 与 gap
+  /api/v1/attempts/{id}/checks:
+    get:
+      summary: 独立验收证据
+  /api/v1/attempts/{id}/artifacts:
+    get:
+      summary: 制品清单
+  /api/v1/attempts/{id}/usage:
+    get:
+      summary: 可空用量
+  /api/v1/attempts/{id}/reviews:
+    get:
+      summary: 人工意见
+    post:
+      summary: 记录意见，不改写结论
+  /api/v1/artifacts/{id}/download:
+    get:
+      summary: 按制品 ID 下载
+  /api/v1/comparisons:
+    get:
+      summary: 可比条件下的计数
+  /api/v1/settings:
+    get:
+      summary: 执行器、网络和备份状态
+  /api/v1/maintenance/backup:
+    post:
+      summary: 维护模式备份
+  /api/v1/imports/harbor:
+    post:
+      summary: 导入 Harbor 子集并列出未映射字段
+  /api/v1/webhooks:
+    post:
+      summary: 签名通知，重复投递只记一次，不自动合并
+  /api/v1/accounts:
+    get:
+      summary: 账号引用
+    post:
+      summary: 保存凭据引用
+  /api/v1/environments:
+    get:
+      summary: 环境版本
+    post:
+      summary: 发布环境快照
