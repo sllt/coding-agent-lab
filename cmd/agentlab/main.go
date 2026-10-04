@@ -8,10 +8,15 @@ import (
 	"os/signal"
 	"syscall"
 
+	"path/filepath"
+
 	"github.com/sllt/agentlab/internal/agent/fixture"
+	"github.com/sllt/agentlab/internal/app"
 	"github.com/sllt/agentlab/internal/bootstrap"
 	"github.com/sllt/agentlab/internal/doctor"
+	"github.com/sllt/agentlab/internal/httpapi"
 	"github.com/sllt/agentlab/internal/runner"
+	"github.com/sllt/agentlab/internal/store/sqlite"
 	"github.com/sllt/agentlab/internal/version"
 )
 
@@ -56,7 +61,26 @@ func run(args []string) error {
 }
 
 func serve(addr string) error {
-	rt, err := bootstrap.Build(bootstrap.Config{Addr: addr})
+	data := os.Getenv("AGENTLAB_DATA")
+	if data == "" {
+		data = ".agentlab"
+	}
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		return err
+	}
+	store, err := sqlite.Open(filepath.Join(data, "lab.db"))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	svc := &app.Service{Store: store, DataDir: data, GlobalLimit: 1}
+	api := httpapi.New(svc)
+	rt, err := bootstrap.Build(bootstrap.Config{
+		Addr:     addr,
+		Register: api.Register,
+		Wrap:     api.Wrap,
+		Worker:   svc.Loop,
+	})
 	if err != nil {
 		return err
 	}
