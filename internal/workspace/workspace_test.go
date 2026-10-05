@@ -75,6 +75,44 @@ func TestCollectsUntrackedAndBinaryWithoutTouchingSource(t *testing.T) {
 	}
 }
 
+func TestCollectSkipsRunnerBookkeeping(t *testing.T) {
+	base := t.TempDir()
+	next := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "orders.go"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(next, "orders.go"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"journal.json", "agent.log", "patch.json"} {
+		if err := os.WriteFile(filepath.Join(next, name), []byte("runner"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(next, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(next, "notes", "journal.json"), []byte("agent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := Collect(base, next, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := map[string]string{}
+	for _, c := range patch.Changes {
+		actions[c.Path] = c.Action
+	}
+	if actions["orders.go"] != "modify" || actions["notes/journal.json"] != "add" {
+		t.Fatalf("actions %#v", actions)
+	}
+	for _, name := range []string{"journal.json", "agent.log", "patch.json"} {
+		if _, ok := actions[name]; ok {
+			t.Fatalf("runner file included: %#v", actions)
+		}
+	}
+}
+
 func TestRejectsSymlinkEscapeAndSpecialFiles(t *testing.T) {
 	src := t.TempDir()
 	outside := t.TempDir()

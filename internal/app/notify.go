@@ -9,9 +9,10 @@ import (
 	"time"
 )
 
-// RetryNotifications delivers pending result notices. Only loopback URLs are
-// contacted. A local target is recorded as delivered without pretending a
-// remote server answered.
+// RetryNotifications delivers pending result notices. Only http loopback
+// URLs are contacted, and they are marked delivered only after that request
+// succeeds. Every other address is a failure: the remote is not pretended
+// to have received the notice. An empty or local target has no remote.
 func (s *Service) RetryNotifications(ctx context.Context) {
 	items, err := s.Store.DueNotifications(ctx)
 	if err != nil {
@@ -25,7 +26,7 @@ func (s *Service) RetryNotifications(ctx context.Context) {
 			continue
 		}
 		if !strings.HasPrefix(item.Target, "http://127.0.0.1:") && !strings.HasPrefix(item.Target, "http://localhost:") {
-			_ = s.Store.FinishNotification(ctx, item.ID, "refused", "notify host is not loopback", attempts)
+			_ = s.Store.FinishNotification(ctx, item.ID, "failed", "notify host is not loopback", attempts)
 			continue
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, item.Target, bytes.NewReader([]byte(item.Body)))

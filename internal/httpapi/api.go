@@ -919,7 +919,7 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 		assisted := ""
 		repair := ""
 		attemptID := ""
-		var agentMs, e2e int64
+		var agentMs, e2e *int64
 		interventions := 0
 		modelMismatch := false
 		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil && len(attempts) > 0 {
@@ -930,9 +930,9 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 				Executor string `json:"executor"`
 				Network  string `json:"network"`
 				Mismatch bool   `json:"model_resolution_mismatch"`
-				Phases   struct {
-					Agent int64 `json:"agent_ms"`
-					E2E   int64 `json:"end_to_end_ms"`
+				Phases   *struct {
+					Agent *int64 `json:"agent_ms"`
+					E2E   *int64 `json:"end_to_end_ms"`
 				} `json:"phases"`
 			}
 			_ = json.Unmarshal([]byte(attempts[0].RuntimeJSON), &runtime)
@@ -942,8 +942,10 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 			if runtime.Network != "" {
 				network = runtime.Network
 			}
-			agentMs = runtime.Phases.Agent
-			e2e = runtime.Phases.E2E
+			if runtime.Phases != nil {
+				agentMs = runtime.Phases.Agent
+				e2e = runtime.Phases.E2E
+			}
 			modelMismatch = runtime.Mismatch
 			if n, err := a.svc.Store.CountInterventions(c, attempts[0].ID); err == nil {
 				interventions += n

@@ -361,6 +361,57 @@ paths:
       responses:
         '200':
           description: 设置
+    patch:
+      operationId: patchSettings
+      summary: 保存并发、保留天数和磁盘配额
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsPatch'
+      responses:
+        '200':
+          description: 已保存
+  /api/v1/audit:
+    get:
+      operationId: listAudit
+      summary: 审计记录
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 审计列表
+  /api/v1/upgrade:
+    get:
+      operationId: upgrade
+      summary: 升级路径，要求先备份
+      responses:
+        '200':
+          description: 升级说明
+  /api/v1/maintenance/retention:
+    post:
+      operationId: retention
+      summary: 预览或按策略删除过期日志和报告
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetentionRequest'
+      responses:
+        '200':
+          description: 保留计划
+  /api/v1/maintenance/quarantine:
+    post:
+      operationId: cleanQuarantine
+      summary: 清理隔离工作区
+      responses:
+        '200':
+          description: 清理结果
   /api/v1/maintenance/backup:
     post:
       operationId: backup
@@ -368,6 +419,43 @@ paths:
       responses:
         '200':
           description: 备份路径
+  /api/v1/exports/harbor:
+    post:
+      operationId: exportHarbor
+      summary: 导出 Harbor 子集
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HarborExport'
+      responses:
+        '200':
+          description: 子集
+  /api/v1/tasks/{id}/flaky:
+    post:
+      operationId: markFlaky
+      summary: 标记任务不稳定，使其离开默认对比集
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlakyMark'
+      responses:
+        '200':
+          description: 已记录
+  /api/v1/trials/{id}/adopt:
+    post:
+      operationId: adoptPatch
+      summary: 只记录采纳补丁，不写入源目录
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: 已记录
   /api/v1/imports/harbor:
     post:
       operationId: importHarbor
@@ -629,3 +717,49 @@ components:
           type: string
         network:
           type: string
+    SettingsPatch:
+      type: object
+      required: [global_limit, retention, disk_quota_bytes]
+      properties:
+        global_limit:
+          type: integer
+          minimum: 1
+          maximum: 8
+        disk_quota_bytes:
+          type: integer
+          minimum: 0
+        retention:
+          type: object
+          properties:
+            log_days:
+              type: integer
+            patch_days:
+              type: integer
+            report_days:
+              type: integer
+    RetentionRequest:
+      type: object
+      properties:
+        apply:
+          type: boolean
+    HarborExport:
+      type: object
+      required: [name, prompt]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        prompt:
+          type: string
+    FlakyMark:
+      type: object
+      required: [task_version_id]
+      properties:
+        task_version_id:
+          type: string
+        fail_rate:
+          type: string
+        note:
+          type: string
+        flaky:
+          type: boolean

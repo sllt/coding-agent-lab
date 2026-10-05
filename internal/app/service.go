@@ -559,7 +559,7 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	s.recordUsage(ctx, attempt.ID, events)
 	s.persistIdentity(ctx, attempt, identityToken)
 	if runErr != nil {
-		s.stampPhases(ctx, attempt, queueMs, agentMs, 0)
+		s.stampPhases(ctx, attempt, queueMs, agentMs, nil)
 		return runErr
 	}
 	_ = s.noteStarted(ctx, attempt)
@@ -575,13 +575,13 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	if !cancelled && runnerAuthFailed(events) {
 		_ = s.Store.BlockAccount(ctx, attempt.AccountID, "authentication_failed")
 		_ = s.Store.Audit(ctx, "control", "block_account", attempt.AccountID, `{"reason":"authentication_failed","source":"runner"}`)
-		s.stampPhases(ctx, attempt, queueMs, agentMs, 0)
+		s.stampPhases(ctx, attempt, queueMs, agentMs, nil)
 		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "authentication_failed")
 	}
 	verifyStart := time.Now()
 	verdict, cleanup, reason := s.judge(ctx, snap, profile, tv.Digest, attempt.ID, base, work, events)
 	verifyMs := time.Since(verifyStart).Milliseconds()
-	s.stampPhases(ctx, attempt, queueMs, agentMs, verifyMs)
+	s.stampPhases(ctx, attempt, queueMs, agentMs, &verifyMs)
 	if cancelled {
 		if current.State == string(domain.ExecRunning) || current.State == string(domain.ExecPreparing) {
 			_ = s.Store.AdvanceAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCancelling))
@@ -1220,19 +1220,23 @@ func (s *Service) scheduleRepair(ctx context.Context, trialID string) {
 	_ = s.Store.InsertIntervention(ctx, first.ID, "protocol_repair", "有界修复协议安排一次修复。这次通过不会回写 single-pass 的首次结论。")
 }
 
-func (s *Service) stampPhases(ctx context.Context, attempt sqlite.Attempt, queueMs, agentMs, verifyMs int64) {
+func (s *Service) stampPhases(ctx context.Context, attempt sqlite.Attempt, queueMs, agentMs int64, verifyMs *int64) {
 	current, err := s.Store.GetAttempt(ctx, attempt.ID)
 	base := attempt.RuntimeJSON
 	if err == nil && current.RuntimeJSON != "" {
 		base = current.RuntimeJSON
 	}
-	e2e := queueMs + agentMs + verifyMs
-	_ = s.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(base, map[string]any{
-		"phases": map[string]int64{
-			"queue_ms": queueMs, "prepare_ms": queueMs, "agent_ms": agentMs,
-			"collect_ms": 0, "verify_ms": verifyMs, "cleanup_ms": 0, "end_to_end_ms": e2e,
-		},
-	}))
+	phases := map[string]any{
+		"queue_ms": queueMs,
+		"agent_ms": agentMs,
+	}
+	e2e := queueMs + agentMs
+	if verifyMs != nil {
+		phases["verify_ms"] = *verifyMs
+		e2e += *verifyMs
+	}
+	phases["end_to_end_ms"] = e2e
+	_ = s.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(base, map[string]any{"phases": phases}))
 }
 
 func (s *Service) saveStagePatch(attempt sqlite.Attempt) {

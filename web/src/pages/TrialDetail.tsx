@@ -128,7 +128,7 @@ export function TrialDetail() {
       <Card title="事件">
         {events.includes('event_buffer_8MiB') || events.includes('"truncated":true') ? <p className="mb-2 text-sm">原始输出带截断标记。下载的事件文件不是被裁掉之后假装完整的文本。</p> : null}
         <EventView text={events} showAll={showAllEvents} />
-        {events.split('\n').length > 80 ? <Button tone="quiet" className="mt-2" onClick={() => setShowAllEvents((v) => !v)}>{showAllEvents ? '只看一段' : '展开全部'}</Button> : null}
+        {eventDocuments(events).length > 80 ? <Button tone="quiet" className="mt-2" onClick={() => setShowAllEvents((v) => !v)}>{showAllEvents ? '只看一段' : '展开全部'}</Button> : null}
       </Card>
       <Card title="人工意见">
         {reviews.length === 0 ? <p className="mb-2 text-sm">还没有意见。</p> : (
@@ -182,9 +182,36 @@ function PatchView({ raw }: { raw: string }) {
   }
 }
 
+function eventDocuments(text: string) {
+  const out: string[] = []
+  let data: string[] = []
+  const flush = () => {
+    if (data.length === 0) return
+    const payload = data.join('\n').trim()
+    if (payload) out.push(payload)
+    data = []
+  }
+  for (const line of text.split('\n')) {
+    if (line === '') {
+      flush()
+      continue
+    }
+    if (line.startsWith('data:')) {
+      data.push(line.slice(5).trim())
+      continue
+    }
+    if (line.startsWith('id:') || line.startsWith('event:') || line.startsWith(':')) continue
+    flush()
+    const raw = line.trim()
+    if (raw.startsWith('{')) out.push(raw)
+  }
+  flush()
+  return out
+}
+
 function EventView({ text, showAll }: { text: string; showAll: boolean }) {
-  const lines = text.split('\n').filter((line) => line.trim() !== '')
-  const visible = showAll ? lines : lines.slice(0, 80)
+  const docs = eventDocuments(text)
+  const visible = showAll ? docs : docs.slice(0, 80)
   const groups = new Map<string, string[]>()
   let phase = '未分阶段'
   for (const line of visible) {

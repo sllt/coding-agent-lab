@@ -20,12 +20,14 @@ type Input struct {
 	ModelMismatch bool
 	// Assisted is the latest retry verdict when a later attempt exists.
 	// It is not counted in Pass/Fail, which stay on the first physical attempt.
-	Assisted       string
-	Repair         string
-	TrialID        string
-	AttemptID      string
-	AgentMillis    int64
-	EndToEndMillis int64
+	Assisted  string
+	Repair    string
+	TrialID   string
+	AttemptID string
+	// AgentMillis and EndToEndMillis are nil when that phase was not measured.
+	// A pointer to 0 is a real measurement. Missing must not become 0.
+	AgentMillis    *int64
+	EndToEndMillis *int64
 	Interventions  int
 }
 
@@ -40,8 +42,10 @@ type Cell struct {
 	AssistedPass     int            `json:"assisted_pass"`
 	AssistedFail     int            `json:"assisted_fail"`
 	RepairPass       int            `json:"repair_pass"`
-	AgentMillis      int64          `json:"agent_millis"`
-	EndToEndMillis   int64          `json:"end_to_end_millis"`
+	AgentMillis      *int64         `json:"agent_millis"`
+	EndToEndMillis   *int64         `json:"end_to_end_millis"`
+	agentGap         bool           `json:"-"`
+	e2eGap           bool           `json:"-"`
 	Interventions    int            `json:"interventions"`
 	Evidence         []EvidenceLink `json:"evidence"`
 }
@@ -111,8 +115,8 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 			g.board.Cells = append(g.board.Cells, Cell{ProfileVersionID: row.ProfileID, DisplayName: row.ProfileName})
 		}
 		cell := &g.board.Cells[idx]
-		cell.AgentMillis += row.AgentMillis
-		cell.EndToEndMillis += row.EndToEndMillis
+		addMillis(&cell.AgentMillis, &cell.agentGap, row.AgentMillis)
+		addMillis(&cell.EndToEndMillis, &cell.e2eGap, row.EndToEndMillis)
 		cell.Interventions += row.Interventions
 		if !row.Terminal {
 			cell.Incomplete++
@@ -169,6 +173,22 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 		out = append(out, g.board)
 	}
 	return out, nil
+}
+
+func addMillis(sum **int64, gap *bool, next *int64) {
+	if next == nil {
+		*gap = true
+		*sum = nil
+		return
+	}
+	if *gap {
+		return
+	}
+	v := *next
+	if *sum != nil {
+		v += **sum
+	}
+	*sum = &v
 }
 
 func appendUnique(base []string, extra ...string) []string {

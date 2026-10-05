@@ -175,6 +175,64 @@ func TestQuotaBlocksNewExperiment(t *testing.T) {
 	}
 }
 
+func TestUnmeasuredPhasesStayAbsent(t *testing.T) {
+	ctx := context.Background()
+	svc := newLab(t)
+	trial := seedTrial(t, svc, "", "empty")
+	account, err := svc.Store.ProfileAccount(ctx, mustProfile(t, svc, trial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := svc.Store.CreateAttempt(ctx, trial, account, `{"executor":"native-trusted"}`, "", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.stampPhases(ctx, attempt, 15, 40, nil)
+	got, err := svc.Store.GetAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases := phaseMap(t, got.RuntimeJSON)
+	for _, key := range []string{"prepare_ms", "collect_ms", "cleanup_ms", "verify_ms"} {
+		if _, ok := phases[key]; ok {
+			t.Fatalf("%s was written: %#v", key, phases)
+		}
+	}
+	if phases["queue_ms"] != float64(15) || phases["agent_ms"] != float64(40) || phases["end_to_end_ms"] != float64(55) {
+		t.Fatalf("%#v", phases)
+	}
+	measured := int64(0)
+	svc.stampPhases(ctx, attempt, 15, 40, &measured)
+	got, err = svc.Store.GetAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases = phaseMap(t, got.RuntimeJSON)
+	if phases["verify_ms"] != float64(0) {
+		t.Fatalf("measured zero was dropped: %#v", phases)
+	}
+	if _, ok := phases["collect_ms"]; ok {
+		t.Fatalf("collect_ms invented: %#v", phases)
+	}
+	if _, ok := phases["cleanup_ms"]; ok {
+		t.Fatalf("cleanup_ms invented: %#v", phases)
+	}
+}
+
+func phaseMap(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var doc struct {
+		Phases map[string]any `json:"phases"`
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Phases == nil {
+		t.Fatal("phases missing")
+	}
+	return doc.Phases
+}
+
 func seedRepairTrial(t *testing.T, svc *Service, root, mode string) string {
 	t.Helper()
 	id := seedTrial(t, svc, root, mode)

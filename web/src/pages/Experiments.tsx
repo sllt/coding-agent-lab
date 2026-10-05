@@ -8,6 +8,7 @@ type Experiment = { ID: string; State: string; ProtocolJSON: string; TrialCount:
 export function Experiments() {
   const [items, setItems] = useState<Experiment[]>([])
   const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
     let stop = false
@@ -16,6 +17,7 @@ export function Experiments() {
         const data = await api.request<{ items: Experiment[] | null }>('GET', '/api/v1/experiments')
         if (!stop) {
           setItems(data.items || [])
+          setLoaded(true)
           setError('')
         }
       } catch (err) {
@@ -35,7 +37,9 @@ export function Experiments() {
         <Link className="text-sm underline" to="/experiments/new">创建</Link>
       </div>
       {error ? <Notice tone="warn">{error}</Notice> : null}
-      {loading ? <Notice>正在读取实验。</Notice> : error ? null : items.length === 0 ? <Notice>还没有实验。空列表不会填演示分数。</Notice> : (
+      {loading && !loaded ? <Notice>正在读取实验。</Notice> : null}
+      {loaded && items.length === 0 ? <Notice>还没有实验。空列表不会填演示分数。</Notice> : null}
+      {loaded && items.length > 0 ? (
         <Card>
           <ul className="flex flex-col gap-3 text-sm">
             {items.map((item) => (
@@ -46,7 +50,7 @@ export function Experiments() {
             ))}
           </ul>
         </Card>
-      )}
+      ) : null}
     </div>
   )
 }

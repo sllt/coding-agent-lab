@@ -126,8 +126,8 @@ func loopbackNotify(body []byte) string {
 		NotifyURL string `json:"notify_url"`
 	}
 	_ = json.Unmarshal(body, &doc)
-	if strings.HasPrefix(doc.NotifyURL, "http://127.0.0.1:") || strings.HasPrefix(doc.NotifyURL, "http://localhost:") {
-		return doc.NotifyURL
+	if doc.NotifyURL == "" {
+		return "local"
 	}
-	return "local"
+	return doc.NotifyURL
 }

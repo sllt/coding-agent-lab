@@ -21,10 +21,12 @@ export function Projects() {
   const [rowVersion, setRowVersion] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [loaded, setLoaded] = useState(false)
 
   async function load() {
     const data = await api.request<{ items: Project[] | null }>('GET', '/api/v1/projects')
     setProjects(data.items || [])
+    setLoaded(true)
   }
   useEffect(() => {
     load().catch((err: Error) => setError(err.message)).finally(() => setLoading(false))
@@ -49,7 +51,9 @@ export function Projects() {
         </div>
         <p className="mt-2 text-sm text-[#6b6258]">登记不会运行仓库里的脚本，也不会改你的源目录。</p>
       </Card>
-      {loading ? <Notice>正在读取项目。</Notice> : error ? null : projects.length === 0 ? <Notice>还没有项目。</Notice> : (
+      {loading && !loaded ? <Notice>正在读取项目。</Notice> : null}
+      {loaded && projects.length === 0 ? <Notice>还没有项目。</Notice> : null}
+      {loaded && projects.length > 0 ? (
         <ul className="flex flex-col gap-2">
           {projects.map((project) => (
             <li key={project.ID}>
@@ -57,7 +61,7 @@ export function Projects() {
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
       {selected ? (
         <Card title="任务草稿">
           <div className="mb-3 flex flex-col gap-2">

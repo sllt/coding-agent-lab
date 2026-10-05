@@ -133,6 +133,17 @@ func CopyBaseline(src, dst string, limits Limits) error {
 	})
 }
 
+// runnerBookkeeping names the files the runner writes into the work tree.
+// They are not part of the agent's change set.
+func runnerBookkeeping(rel string) bool {
+	switch filepath.ToSlash(rel) {
+	case "journal.json", "agent.log", "patch.json":
+		return true
+	default:
+		return false
+	}
+}
+
 func Inventory(root string, limits Limits) ([]Entry, error) {
 	limits = limits.normalize()
 	root = filepath.Clean(root)
@@ -147,6 +158,9 @@ func Inventory(root string, limits Limits) ([]Entry, error) {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		if runnerBookkeeping(rel) {
 			return nil
 		}
 		if d.Name() == ".git" && d.IsDir() {
