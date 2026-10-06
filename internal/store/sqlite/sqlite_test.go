@@ -3,9 +3,14 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/sllt/agentlab/internal/domain"
 )
 
 func TestPragmaPerConnectionTransactionAndRecovery(t *testing.T) {
@@ -85,6 +90,78 @@ func TestPragmaPerConnectionTransactionAndRecovery(t *testing.T) {
 		t.Fatalf("published version update err=%v", err)
 	}
 }
+
+func TestUsageOrderFollowsEventID(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	early := domain.Usage{Source: "cli", SourceEventID: "1", IsCumulative: true, InputTokens: int64Ptr(3)}
+	final := domain.Usage{Source: "cli", SourceEventID: "2", IsCumulative: true, InputTokens: int64Ptr(8)}
+	insertUsage(t, s, "zzz-sorts-last", early)
+	insertUsage(t, s, "aaa-sorts-first", final)
+	rows, err := s.ListUsage(ctx, "att-usage")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("%+v %v", rows, err)
+	}
+	folded, err := domain.FoldUsage(rows)
+	if err != nil || folded.InputTokens == nil || *folded.InputTokens != 8 {
+		t.Fatalf("folded %+v %v", folded, err)
+	}
+}
+
+func TestConcurrentSetupCreatesOneAdmin(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errCh := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errCh <- s.CreateAdmin(ctx, fmt.Sprintf("user-%d", i), "hash")
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	ok := 0
+	for err := range errCh {
+		if err == nil {
+			ok++
+		} else if !strings.Contains(err.Error(), "admin exists") && err != ErrAdminExists {
+			t.Fatal(err)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("admins created %d", ok)
+	}
+	n, err := s.UserCount(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("users %d %v", n, err)
+	}
+}
+
+func openStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "lab.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func insertUsage(t *testing.T, s *Store, id string, usage domain.Usage) {
+	t.Helper()
+	usage.AttemptID = "att-usage"
+	body, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO usage_records(id, attempt_id, source, source_event_id, measures_json) VALUES(?,?,?,?,?)`, id, "att-usage", usage.Source, usage.SourceEventID, string(body)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func int64Ptr(n int64) *int64 { return &n }
 
 func fmtError() error { return errStop }
 

@@ -12,6 +12,11 @@ type Check struct {
 	MissingCaseIDs []string
 	SkippedCaseIDs []string
 	Assurance      string
+	// ExitCode, DurationMS and EvidenceDigest are recorded by the verifier.
+	// A nil exit code means the check did not reach a process. Zero is a real exit.
+	ExitCode       *int   `json:"ExitCode,omitempty"`
+	DurationMS     int64  `json:"DurationMS,omitempty"`
+	EvidenceDigest string `json:"EvidenceDigest,omitempty"`
 }
 
 const (

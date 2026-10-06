@@ -43,6 +43,21 @@ func fake() int {
 	case "hang":
 		time.Sleep(time.Minute)
 		return 0
+	case "setsid":
+		cmd := exec.Command("sleep", "120")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return 1
+		}
+		_ = os.WriteFile("child.pid", []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+		_ = cmd.Wait()
+		return 0
+	case "flood":
+		for i := 0; i < 80; i++ {
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", 40) + "\n")
+		}
+		time.Sleep(30 * time.Second)
+		return 0
 	default:
 		_ = os.WriteFile("hello.txt", []byte("agentlab-ok\n"), 0o644)
 		return 0
@@ -127,6 +142,106 @@ func TestCancelKillsGrandchildAndForgedFinishIsNotControl(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSetsidChildIsNotAliveAtCollect(t *testing.T) {
+	base := t.TempDir()
+	work := t.TempDir()
+	control := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "readme.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "readme.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{
+		SchemaVersion: "agentlab.exec/v1", AttemptID: "att-setsid", Fence: 1, Token: "secret-token",
+		WorkDir: work, BaselineDir: base, ControlDir: control, Executor: "native-trusted", Network: "unrestricted", WallSeconds: 5,
+		Launch: agent.LaunchSpec{Executable: os.Args[0], Args: []string{"fake-agent"}, Env: map[string]string{"AGENTLAB_FAKE_MODE": "setsid"}},
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write(must(map[string]any{"type": "Start", "token": spec.Token, "spec": spec}))
+		time.Sleep(200 * time.Millisecond)
+		b, _ := json.Marshal(map[string]string{"type": "Cancel", "reason": "user"})
+		_, _ = pw.Write(append(b, '\n'))
+		time.Sleep(time.Second)
+		_ = pw.Close()
+	}()
+	var output bytes.Buffer
+	if err := Serve(t.Context(), pr, &output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(work, "journal.json")); !os.IsNotExist(err) {
+		t.Fatalf("journal landed in the work tree: %v", err)
+	}
+	events := parseEvents(t, output.Bytes())
+	var cleanup string
+	for _, ev := range events {
+		if ev.Origin == "runner" && ev.Type == "CleanupCompleted" {
+			cleanup = string(ev.Payload)
+		}
+	}
+	pidRaw, err := os.ReadFile(filepath.Join(work, "child.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if syscall.Kill(pid, 0) == nil && strings.Contains(cleanup, `"state":"clean"`) {
+		t.Fatalf("setsid child %d still alive with %s", pid, cleanup)
+	}
+}
+
+func TestLogCapStopsTheAgent(t *testing.T) {
+	base := t.TempDir()
+	work := t.TempDir()
+	control := t.TempDir()
+	spec := Spec{
+		SchemaVersion: "agentlab.exec/v1", AttemptID: "att-log", Fence: 1, Token: "secret-token",
+		WorkDir: work, BaselineDir: base, ControlDir: control, Executor: "native-trusted", Network: "unrestricted",
+		WallSeconds: 8, LogBytes: 50,
+		Launch: agent.LaunchSpec{Executable: os.Args[0], Args: []string{"fake-agent"}, Env: map[string]string{"AGENTLAB_FAKE_MODE": "flood"}},
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write(must(map[string]any{"type": "Start", "token": spec.Token, "spec": spec}))
+		time.Sleep(2 * time.Second)
+		_ = pw.Close()
+	}()
+	var output bytes.Buffer
+	if err := Serve(t.Context(), pr, &output); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(control, "agent.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 50 {
+		t.Fatalf("log grew past the cap: %d", info.Size())
+	}
+	if !strings.Contains(output.String(), `"reason":"log_limit"`) {
+		t.Fatalf("events %s", output.String())
+	}
+}
+
+func TestSanitizedEnvDropsHomeAndSolution(t *testing.T) {
+	t.Setenv("HOME", "/tmp/host-home-secret")
+	spec := &Spec{AttemptID: "a", HomeDir: t.TempDir(), TmpDir: t.TempDir(), Launch: agent.LaunchSpec{Env: map[string]string{"AGENTLAB_SOLUTION_DIR": "/secret/orders.go"}}}
+	for _, item := range sanitizedEnv(spec) {
+		if strings.Contains(item, "host-home-secret") || strings.Contains(item, "SOLUTION") {
+			t.Fatalf("env leaked %s", item)
+		}
+	}
+}
+
+func TestDockerExecutorIsRefused(t *testing.T) {
+	spec := Spec{AttemptID: "a", Fence: 1, Token: "t", Executor: "docker", Network: "unrestricted", Launch: agent.LaunchSpec{Executable: "true"}}
+	input := bytes.NewBuffer(must(map[string]any{"type": "Start", "token": "t", "spec": spec}))
+	err := Serve(t.Context(), input, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "docker") {
+		t.Fatal(err)
 	}
 }
 

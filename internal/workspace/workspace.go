@@ -5,6 +5,7 @@ package workspace
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -71,7 +72,10 @@ var (
 	ErrEscape   = errors.New("path escapes workspace")
 	ErrTooLarge = errors.New("workspace limit exceeded")
 	ErrHardlink = errors.New("hard link rejected")
+	ErrOverlap  = errors.New("source and destination overlap")
 )
+
+const maxDepth = 32
 
 // CopyBaseline copies regular files. Symlinks, devices and .git are rejected
 // or skipped: .git is skipped so the source history is not exposed.
@@ -79,10 +83,14 @@ func CopyBaseline(src, dst string, limits Limits) error {
 	limits = limits.normalize()
 	src = filepath.Clean(src)
 	dst = filepath.Clean(dst)
+	if err := rejectOverlap(src, dst); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
 	var files int
+	var dirs int
 	var total int64
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -115,7 +123,15 @@ func CopyBaseline(src, dst string, limits Limits) error {
 		if !inside(dst, target) {
 			return fmt.Errorf("%w: %s", ErrEscape, rel)
 		}
+		depth := strings.Count(filepath.ToSlash(rel), "/") + 1
+		if depth > maxDepth {
+			return ErrTooLarge
+		}
 		if d.IsDir() {
+			dirs++
+			if dirs > limits.MaxFiles {
+				return ErrTooLarge
+			}
 			return os.MkdirAll(target, 0o755)
 		}
 		if !info.Mode().IsRegular() {
@@ -131,6 +147,31 @@ func CopyBaseline(src, dst string, limits Limits) error {
 		}
 		return copyFile(path, target, info.Mode().Perm())
 	})
+}
+
+func rejectOverlap(src, dst string) error {
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	dstAbs, err := filepath.Abs(dst)
+	if err != nil {
+		return err
+	}
+	srcAbs = resolvePath(srcAbs)
+	dstAbs = resolvePath(dstAbs)
+	if srcAbs == dstAbs || inside(srcAbs, dstAbs) || inside(dstAbs, srcAbs) {
+		return fmt.Errorf("%w: %s and %s", ErrOverlap, srcAbs, dstAbs)
+	}
+	return nil
+}
+
+func resolvePath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return path
 }
 
 // runnerBookkeeping names the files the runner writes into the work tree.
@@ -188,7 +229,7 @@ func Inventory(root string, limits Limits) ([]Entry, error) {
 		if info.Size() > limits.MaxFileBytes || len(out)+1 > limits.MaxFiles || total+info.Size() > limits.MaxBytes {
 			return ErrTooLarge
 		}
-		body, err := os.ReadFile(path)
+		body, err := readNoFollow(path)
 		if err != nil {
 			return err
 		}
@@ -227,7 +268,7 @@ func Collect(baseRoot, nextRoot string, limits Limits) (Patch, error) {
 		if ok && old.Digest == e.Digest && old.Mode == e.Mode {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(nextRoot, filepath.FromSlash(e.Path)))
+		body, err := readNoFollow(filepath.Join(nextRoot, filepath.FromSlash(e.Path)))
 		if err != nil {
 			return Patch{}, err
 		}
@@ -257,6 +298,20 @@ func Collect(baseRoot, nextRoot string, limits Limits) (Patch, error) {
 // Apply copies baseline and overlays the patch. The returned digest is computed
 // from the rebuilt tree and must match the collected digest.
 func Apply(baseline, dest string, patch Patch, limits Limits) (string, error) {
+	if patch.BaseDigest == "" || patch.Digest == "" {
+		return "", fmt.Errorf("patch is missing a base or tree digest")
+	}
+	before, err := Inventory(baseline, limits)
+	if err != nil {
+		return "", err
+	}
+	baseDigest, err := digestEntries(before)
+	if err != nil {
+		return "", err
+	}
+	if baseDigest != patch.BaseDigest {
+		return "", fmt.Errorf("base digest mismatch")
+	}
 	if err := CopyBaseline(baseline, dest, limits); err != nil {
 		return "", err
 	}
@@ -284,6 +339,9 @@ func Apply(baseline, dest string, patch Patch, limits Limits) (string, error) {
 			if err := os.WriteFile(target, c.Content, mode); err != nil {
 				return "", err
 			}
+			if err := os.Chmod(target, mode); err != nil {
+				return "", err
+			}
 			sum := sha256.Sum256(c.Content)
 			if hex.EncodeToString(sum[:]) != c.Digest {
 				return "", fmt.Errorf("blob digest mismatch for %s", c.Path)
@@ -296,7 +354,48 @@ func Apply(baseline, dest string, patch Patch, limits Limits) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return digestEntries(entries)
+	got, err := digestEntries(entries)
+	if err != nil {
+		return "", err
+	}
+	if got != patch.Digest {
+		return "", fmt.Errorf("tree digest mismatch")
+	}
+	return got, nil
+}
+
+func (c Change) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Path    string `json:"path"`
+		Action  string `json:"action"`
+		Digest  string `json:"digest,omitempty"`
+		Size    int64  `json:"size"`
+		Binary  bool   `json:"binary"`
+		Mode    uint32 `json:"mode,omitempty"`
+		Content []byte `json:"content,omitempty"`
+	}
+	return json.Marshal(wire{
+		Path: c.Path, Action: c.Action, Digest: c.Digest, Size: c.Size,
+		Binary: c.Binary, Mode: c.Mode, Content: c.Content,
+	})
+}
+
+func (c *Change) UnmarshalJSON(raw []byte) error {
+	type wire struct {
+		Path    string `json:"path"`
+		Action  string `json:"action"`
+		Digest  string `json:"digest,omitempty"`
+		Size    int64  `json:"size"`
+		Binary  bool   `json:"binary"`
+		Mode    uint32 `json:"mode,omitempty"`
+		Content []byte `json:"content,omitempty"`
+	}
+	var w wire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return err
+	}
+	*c = Change{Path: w.Path, Action: w.Action, Digest: w.Digest, Size: w.Size, Binary: w.Binary, Mode: w.Mode, Content: w.Content}
+	return nil
 }
 
 func digestEntries(entries []Entry) (string, error) {
@@ -344,6 +443,22 @@ func bytesBinary(b []byte) bool {
 		}
 	}
 	return false
+}
+
+func readNoFollow(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s", ErrSpecial, path)
+	}
+	return io.ReadAll(f)
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {

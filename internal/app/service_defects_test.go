@@ -141,90 +141,40 @@ func TestPublishFreezesBytesAndRefusesDataDir(t *testing.T) {
 func TestCursorLaunchDoesNotReceiveSolution(t *testing.T) {
 	ctx := context.Background()
 	svc := newLab(t)
-	src := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(src, "solutions", "correct"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(src, "solutions", "correct", "answer.txt"), []byte("secret"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out := t.TempDir()
-	script := filepath.Join(out, "agent")
-	text := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v0; exit 0; fi\nprintf '%s\\n' \"$@\" > " + shellQuote(filepath.Join(out, "args")) + "\nenv > " + shellQuote(filepath.Join(out, "env")) + "\nexit 0\n"
-	if err := os.WriteFile(script, []byte(text), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	abs, err := filepath.Abs(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project, err := svc.Store.CreateProject(ctx, "游标", `{"kind":"local","allowed_roots":["`+abs+`"]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(TaskSnapshot{Name: "题", Prompt: "不要看答案", SourceDir: abs})
-	task, err := svc.Store.CreateTask(ctx, project.ID, "题", string(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tv, err := svc.PublishTask(ctx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	account, err := svc.Store.CreateAccount(ctx, "manual_import", "ref:cursor", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft, _ := json.Marshal(ProfileSnapshot{Adapter: "cursor", Model: "cursor-local", Executor: "docker", Network: "restricted", DisplayName: "Cursor", Executable: script, BillingPath: "subscription", EntitlementVerifiedAt: "2026-10-04T00:00:00Z"})
-	profile, err := svc.Store.CreateProfile(ctx, "Cursor", account.ID, string(draft))
-	if err != nil {
-		t.Fatal(err)
+	reject := func(name string, snap ProfileSnapshot) {
+		t.Helper()
+		draft, _ := json.Marshal(snap)
+		profile, err := svc.Store.CreateProfile(ctx, name, account.ID, string(draft))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.PublishProfile(ctx, profile.ID); !errors.Is(err, ErrUnexecutable) {
+			t.Fatalf("%s published instead of being rejected: %v", name, err)
+		}
 	}
-	pv, err := svc.PublishProfile(ctx, profile.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var snap ProfileSnapshot
-	if err := json.Unmarshal([]byte(pv.SnapshotJSON), &snap); err != nil {
-		t.Fatal(err)
-	}
-	if snap.Executor != "native-trusted" || snap.Network != "unrestricted" {
-		t.Fatalf("published runtime %+v", snap)
-	}
-	exp, err := svc.SubmitExperiment(ctx, ExperimentRequest{
-		Actor: "local", IdempotencyKey: "cursor-env", Mode: domain.ModeAgentProfile,
-		TaskVersionIDs: []string{tv.ID}, ProfileVersionIDs: []string{pv.ID}, Repetitions: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	trials, err := svc.Store.ListTrials(ctx, exp.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reject("docker-offline", ProfileSnapshot{Adapter: "cursor", Model: "cursor-local", Executor: "docker", Network: "offline", DisplayName: "Cursor", Executable: "/bin/true", BillingPath: "subscription", EntitlementVerifiedAt: "2026-10-04T00:00:00Z"})
+	reject("restricted", ProfileSnapshot{Adapter: "cursor", Model: "cursor-local", Executor: "native-trusted", Network: "restricted", DisplayName: "Cursor", Executable: "/bin/true"})
+	reject("unverified", ProfileSnapshot{Adapter: "cursor", Model: "never-verified-model", Executor: "native-trusted", Network: "unrestricted", DisplayName: "Cursor", Executable: "/bin/true", BillingPath: "subscription"})
+	reject("fake-mode", ProfileSnapshot{Adapter: "cursor", Model: "cursor-local", Executor: "native-trusted", Network: "unrestricted", DisplayName: "Cursor", FakeMode: "success", Executable: "/bin/true"})
+
+	trial := seedTrial(t, svc, "", "success")
 	if err := svc.Pump(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	env, err := os.ReadFile(filepath.Join(out, "env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(env, []byte("AGENTLAB_SOLUTION_DIR")) || bytes.Contains(env, []byte("AGENTLAB_FAKE_MODE")) {
-		t.Fatalf("solution env leaked:\n%s", env)
-	}
-	args, err := os.ReadFile(filepath.Join(out, "args"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(args, []byte("--force")) {
-		t.Fatalf("unapproved cursor launch included --force: %s", args)
-	}
-	attempts, err := svc.Store.ListAttempts(ctx, trials[0].ID)
+	attempts, err := svc.Store.ListAttempts(ctx, trial)
 	if err != nil || len(attempts) != 1 {
 		t.Fatal(err)
 	}
-	if !bytes.Contains([]byte(attempts[0].RuntimeJSON), []byte("home_inherited")) || !bytes.Contains([]byte(attempts[0].RuntimeJSON), []byte("observational/native")) {
+	runtime := []byte(attempts[0].RuntimeJSON)
+	if !bytes.Contains(runtime, []byte(`"home_inherited":false`)) || !bytes.Contains(runtime, []byte("observational/native")) {
 		t.Fatalf("runtime %s", attempts[0].RuntimeJSON)
+	}
+	if bytes.Contains(runtime, []byte("AGENTLAB_SOLUTION_DIR")) {
+		t.Fatalf("solution path stored in runtime: %s", attempts[0].RuntimeJSON)
 	}
 }
 
@@ -377,6 +327,187 @@ func TestRepetitionCapAndExperimentRepair(t *testing.T) {
 	}
 }
 
-func shellQuote(path string) string {
-	return "'" + path + "'"
+func TestMissingIdentityQuarantinesAndHoldsCapacity(t *testing.T) {
+	ctx := context.Background()
+	svc := newLab(t)
+	trial := seedTrial(t, svc, "", "success")
+	account, err := svc.Store.ProfileAccount(ctx, mustProfile(t, svc, trial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := svc.Store.CreateAttempt(ctx, trial, account, NativeRuntime(), "", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Store.MarkAgentStarted(ctx, attempt.ID, attempt.Fence); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(NativeRuntime(), map[string]any{"launch_attempted": true})); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Store.GetAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CleanupState != string(domain.CleanupQuarantined) || got.Reason != "identity_missing" {
+		t.Fatalf("missing identity %+v", got)
+	}
+	active, err := svc.Store.GlobalActiveAttempts(ctx)
+	if err != nil || active != 1 {
+		t.Fatalf("capacity released: %d %v", active, err)
+	}
+}
+
+func TestCancelAfterPrepareDoesNotLaunch(t *testing.T) {
+	ctx := context.Background()
+	svc := newLab(t)
+	trialID := seedTrial(t, svc, "", "success")
+	account, err := svc.Store.ProfileAccount(ctx, mustProfile(t, svc, trialID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := svc.Store.CreateAttempt(ctx, trialID, account, NativeRuntime(), "", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Store.RequestCancel(ctx, trialID); err != nil {
+		t.Fatal(err)
+	}
+	trial, err := svc.Store.GetTrial(ctx, trialID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.execute(ctx, trial, attempt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Store.GetAttempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != string(domain.ExecCancelled) {
+		t.Fatalf("started after cancel: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(svc.DataDir, "attempts", attempt.ID, "events.ndjson")); !os.IsNotExist(err) {
+		t.Fatalf("runner wrote events after cancel: %v", err)
+	}
+}
+
+func TestEvidenceWriteFailureIsNotPass(t *testing.T) {
+	ctx := context.Background()
+	svc := newLab(t)
+	root, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "tasks", "orders-pagination"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict, _, reason := svc.judge(ctx, TaskSnapshot{VerifierRoot: root}, ProfileSnapshot{}, "digest", "missing-attempt", t.TempDir(), t.TempDir(), nil)
+	if verdict == domain.VerdictPass || reason != "evidence_missing" {
+		t.Fatalf("verdict %s reason %s", verdict, reason)
+	}
+}
+
+func TestTamperedSnapshotDoesNotRun(t *testing.T) {
+	ctx := context.Background()
+	svc := newLab(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := svc.Store.CreateProject(ctx, "漂移", `{"kind":"local","allowed_roots":["`+abs+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(TaskSnapshot{Name: "漂移", Prompt: "保持发布时的字节", SourceDir: abs})
+	task, err := svc.Store.CreateTask(ctx, project.ID, "漂移", string(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := svc.PublishTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap TaskSnapshot
+	if err := json.Unmarshal([]byte(version.SnapshotJSON), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap.SnapshotDir, "note.txt"), []byte("changed-after-publish"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	account, err := svc.Store.CreateAccount(ctx, "manual_import", "ref:tamper", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, _ := json.Marshal(ProfileSnapshot{Adapter: "fixture", Model: "fixture-local", FakeMode: "empty", Executor: "native-trusted", Network: "unrestricted", DisplayName: "假 CLI"})
+	profile, err := svc.Store.CreateProfile(ctx, "假", account.ID, string(draft))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, err := svc.PublishProfile(ctx, profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, err := svc.SubmitExperiment(ctx, ExperimentRequest{
+		Actor: "local", IdempotencyKey: "tamper", Mode: domain.ModeAgentProfile,
+		TaskVersionIDs: []string{version.ID}, ProfileVersionIDs: []string{pv.ID}, Repetitions: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Pump(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	trials, err := svc.Store.ListTrials(ctx, exp.ID)
+	if err != nil || len(trials) != 1 {
+		t.Fatal(err)
+	}
+	attempts, err := svc.Store.ListAttempts(ctx, trials[0].ID)
+	if err != nil || len(attempts) != 1 || attempts[0].Verdict != string(domain.VerdictInconclusive) || attempts[0].Reason != "snapshot digest mismatch" {
+		t.Fatalf("%+v %v", attempts, err)
+	}
+}
+
+func TestUnresolvedCommitCannotPublish(t *testing.T) {
+	ctx := context.Background()
+	svc := newLab(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := svc.Store.CreateProject(ctx, "提交", `{"kind":"local","allowed_roots":["`+abs+`"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(TaskSnapshot{Name: "提交", Prompt: "必须是真实提交", SourceDir: abs, BaseCommit: "HEAD"})
+	task, err := svc.Store.CreateTask(ctx, project.ID, "提交", string(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PublishTask(ctx, task.ID); !errors.Is(err, ErrUnexecutable) {
+		t.Fatalf("unresolved commit err %v", err)
+	}
+}
+
+func TestClosedDatabaseStopsTheLoop(t *testing.T) {
+	svc := newLab(t)
+	if err := svc.Store.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	if err := svc.Loop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.Maintenance() || svc.FatalError() == "" {
+		t.Fatalf("maintenance %v fatal %q", svc.Maintenance(), svc.FatalError())
+	}
 }

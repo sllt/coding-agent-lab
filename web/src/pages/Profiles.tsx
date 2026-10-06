@@ -96,7 +96,7 @@ export function Profiles() {
               </label>
               <label className="flex items-start gap-2 text-sm">
                 <input type="checkbox" checked={entitled} onChange={(e) => setEntitled(e.target.checked)} />
-                <span>我确认这次调用走上面这条计费路径。发布会记下确认时间。页面不保存密钥。</span>
+                <span>记下你确认的计费路径。真实适配器在授权模型探测完成前不能发布，勾选不会把它变成已验证。</span>
               </label>
             </>
           ) : null}
@@ -129,7 +129,7 @@ export function Profiles() {
               <li key={profile.ID} className="flex flex-wrap gap-2">
                 <span>{profile.Name}</span>
                 <Button tone="quiet" onClick={() => void api.request<Report>('POST', `/api/v1/profiles/${profile.ID}/doctor`, { allow_model_call: false }).then((data) => setReport(`${data.note || ''} 模型调用 ${data.model_call || 'not_run'}，网络 ${data.network || 'unrestricted'}，静态通过 ${data.static_passed ? '是' : '否'}，已验证 ${data.verified ? '是' : '否'}。`)).catch((err: Error) => setError(err.message))}>doctor</Button>
-                <Button onClick={() => void api.request('POST', `/api/v1/profiles/${profile.ID}/publish`).then(() => setReport('已发布。占位字段和未通过 doctor 的配置不能发布。Docker 会改记为 native-trusted。')).catch((err: Error) => setError(err.message))}>发布</Button>
+                <Button onClick={() => void api.request('POST', `/api/v1/profiles/${profile.ID}/publish`).then(() => setReport('已发布。未通过 doctor、未验证的真实配置，以及 Docker 或受限网络，都会被拒绝，不会改成本机执行。')).catch((err: Error) => setError(err.message))}>发布</Button>
               </li>
             ))}
           </ul>

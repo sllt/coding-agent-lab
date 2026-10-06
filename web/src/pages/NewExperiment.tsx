@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { stableSubmitKey } from '../submitKey.ts'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api.ts'
 import { Button, Card, Notice } from '../components/ui.tsx'
@@ -21,12 +22,21 @@ export function NewExperiment() {
   const [protocol, setProtocol] = useState('single-pass-v1')
   const [error, setError] = useState('')
   const [loadFailed, setLoadFailed] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const keyRef = useRef({ payload: '', key: '' })
 
   useEffect(() => {
     void (async () => {
-      const projects = await api.request<{ items: { ID: string }[] | null }>('GET', '/api/v1/projects')
+      const projects = await api.request<{ items: { ID: string }[] | null; next_cursor?: string }>('GET', '/api/v1/projects')
+      let cursor = projects.next_cursor || ''
+      const projectItems = [...(projects.items || [])]
+      while (cursor) {
+        const page = await api.request<{ items: { ID: string }[] | null; next_cursor?: string }>('GET', `/api/v1/projects?cursor=${encodeURIComponent(cursor)}`)
+        projectItems.push(...(page.items || []))
+        cursor = page.next_cursor || ''
+      }
       const taskVersions: Version[] = []
-      for (const project of projects.items || []) {
+      for (const project of projectItems) {
         const tasks = await api.request<{ items: { ID: string; Name: string }[] | null }>('GET', `/api/v1/projects/${project.ID}/tasks`)
         for (const task of tasks.items || []) {
           const versions = await api.request<{ items: { ID: string; Version: number }[] | null }>('GET', `/api/v1/tasks/${task.ID}/versions`)
@@ -57,8 +67,6 @@ export function NewExperiment() {
     repetitions: reps,
     protocol,
   }), [mode, pickedTasks, pickedProfiles, reps, protocol])
-
-  const idempotencyKey = useMemo(() => `ui-${fnv(JSON.stringify(payload))}`, [payload])
 
   function toggle(list: string[], id: string, set: (v: string[]) => void) {
     set(list.includes(id) ? list.filter((item) => item !== id) : [...list, id])
@@ -97,8 +105,8 @@ export function NewExperiment() {
         <Card title="环境、权限和费用">
           <p className="mb-3 text-sm">{formula}。这是计划规模，不是预计 API 请求数，也不是费用估算。</p>
           <ul className="mb-3 list-disc pl-5 text-sm">
-            <li>执行器：native-trusted。本机进程执行，不提供容器级隔离。请求 Docker 也会按 native-trusted 记录。</li>
-            <li>网络：unrestricted。restricted 还没有强制执行。</li>
+            <li>执行器必须在配置里明确选择 native-trusted。Docker 还没有经过验证，发布时会被拒绝，不会改成本机执行。</li>
+            <li>网络必须是 unrestricted。restricted 和 offline 不能发布。</li>
             <li>全局并发可在设置里改成 1 到 8。大于 1 时不同账号会重叠运行。同一账号的清理未完成时不会再启动。</li>
             <li>
               <label className="mr-3">模式
@@ -130,7 +138,16 @@ export function NewExperiment() {
           <Notice tone="warn">提交会排队执行。假 CLI 不产生模型费用；真实适配器一旦发布并运行，就会消耗对应账号。同一份计划重复提交会回到原计划，不会再插一份。</Notice>
           <div className="mt-3 flex gap-2">
             <Button tone="quiet" onClick={() => setStep(3)}>上一步</Button>
-            <Button onClick={() => void api.request<{ id: string }>('POST', '/api/v1/experiments', payload, { 'Idempotency-Key': idempotencyKey }).then((data) => navigate(`/experiments/${data.id}`)).catch((err: Error) => setError(err.message))}>冻结并排队</Button>
+            <Button disabled={submitting} onClick={() => {
+              if (submitting) return
+              const key = stableSubmitKey(keyRef.current, JSON.stringify(payload))
+              keyRef.current = { payload: JSON.stringify(payload), key }
+              setSubmitting(true)
+              void api.request<{ id: string }>('POST', '/api/v1/experiments', payload, { 'Idempotency-Key': key }).then((data) => {
+                keyRef.current = { payload: '', key: '' }
+                navigate(`/experiments/${data.id}`)
+              }).catch((err: Error) => { setError(err.message); setSubmitting(false) })
+            }}>冻结并排队</Button>
           </div>
         </Card>
       ) : null}
@@ -138,11 +155,3 @@ export function NewExperiment() {
   )
 }
 
-function fnv(text: string) {
-  let hash = 2166136261
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16)
-}

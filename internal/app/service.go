@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -37,6 +38,7 @@ type Service struct {
 	GlobalLimit int
 	WallSeconds int
 	maint       atomic.Bool
+	fatal       atomic.Value
 }
 
 type TaskSnapshot struct {
@@ -74,13 +76,6 @@ func (s *Service) SetMaintenance(on bool) { s.maint.Store(on) }
 func (s *Service) Maintenance() bool      { return s.maint.Load() }
 
 func (s *Service) Setup(ctx context.Context, username, password string) error {
-	n, err := s.Store.UserCount(ctx)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return ErrAdminExists
-	}
 	if len(password) < 8 {
 		return errors.New("password too short")
 	}
@@ -88,7 +83,13 @@ func (s *Service) Setup(ctx context.Context, username, password string) error {
 	if err != nil {
 		return err
 	}
-	return s.Store.CreateUser(ctx, username, string(hash))
+	if err := s.Store.CreateAdmin(ctx, username, string(hash)); err != nil {
+		if errors.Is(err, sqlite.ErrAdminExists) {
+			return ErrAdminExists
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) Login(ctx context.Context, username, password string) (token, csrf string, err error) {
@@ -149,20 +150,12 @@ func (s *Service) PublishTask(ctx context.Context, taskID string) (sqlite.TaskVe
 			return sqlite.TaskVersion{}, ErrUnexecutable
 		}
 	}
-	preJSON := `{"baseline":"exploratory"}`
-	if snap.VerifierRoot != "" {
-		pre, err := verifier.Precheck(ctx, verifier.GoChecks(snap.VerifierRoot))
+	if snap.BaseCommit != "" && origin != "" {
+		resolved, err := workspace.ResolveCommit(origin, snap.BaseCommit)
 		if err != nil {
-			return sqlite.TaskVersion{}, err
-		}
-		body, err := json.Marshal(pre)
-		if err != nil {
-			return sqlite.TaskVersion{}, err
-		}
-		preJSON = string(body)
-		if pre.BaselineBlocked {
 			return sqlite.TaskVersion{}, ErrUnexecutable
 		}
+		snap.BaseCommit = resolved
 	}
 	if origin != "" {
 		dir, digest, commit, err := workspace.Freeze(origin, filepath.Join(s.DataDir, "task-snapshots"))
@@ -186,6 +179,29 @@ func (s *Service) PublishTask(ctx context.Context, taskID string) (sqlite.TaskVe
 		}
 		snap.VerifierRoot = dir
 		snap.VerifierDigest = digest
+	}
+	preJSON := `{"baseline":"exploratory","content_digest":"` + snap.ContentDigest + `","verifier_digest":"` + snap.VerifierDigest + `"}`
+	if snap.VerifierRoot != "" {
+		pre, err := verifier.Precheck(ctx, verifier.GoChecks(snap.VerifierRoot))
+		if err != nil {
+			return sqlite.TaskVersion{}, err
+		}
+		if err := verifier.Calibrate(ctx, verifier.GoChecks(snap.VerifierRoot)); err != nil {
+			return sqlite.TaskVersion{}, fmt.Errorf("%w: calibrate: %v", ErrUnexecutable, err)
+		}
+		body, err := json.Marshal(struct {
+			verifier.Outcome
+			ContentDigest     string `json:"content_digest"`
+			VerifierDigest    string `json:"verifier_digest"`
+			EnvironmentDigest string `json:"environment_digest"`
+		}{Outcome: pre, ContentDigest: snap.ContentDigest, VerifierDigest: snap.VerifierDigest, EnvironmentDigest: "native-trusted:unrestricted"})
+		if err != nil {
+			return sqlite.TaskVersion{}, err
+		}
+		preJSON = string(body)
+		if pre.BaselineBlocked {
+			return sqlite.TaskVersion{}, ErrUnexecutable
+		}
 	}
 	body, err := json.Marshal(snap)
 	if err != nil {
@@ -211,30 +227,26 @@ func (s *Service) PublishProfile(ctx context.Context, profileID string) (sqlite.
 	if snap.Adapter == "" {
 		return sqlite.ProfileVersion{}, ErrUnexecutable
 	}
-	requestedExecutor := snap.Executor
-	if snap.Executor == "" || snap.Executor == "docker" {
-		snap.Executor = "native-trusted"
+	if err := validateExecution(snap); err != nil {
+		return sqlite.ProfileVersion{}, err
 	}
-	if snap.Network == "" || snap.Network == "restricted" {
-		snap.Network = "unrestricted"
+	if snap.Adapter != "fixture" && snap.FakeMode != "" {
+		return sqlite.ProfileVersion{}, ErrUnexecutable
 	}
 	report := doctor.Static(ctx, snap.Adapter, snap.Executable, snap.Model, false)
 	report.Executor = snap.Executor
+	report.Network = snap.Network
 	if snap.Adapter == "cursor" && !snap.ApproveTools {
 		report.Note = strings.TrimSpace(report.Note + " 未批准 --force，Cursor 不能写文件。")
-	}
-	if requestedExecutor == "docker" {
-		report.Note = strings.TrimSpace(report.Note + " 请求的执行器是 docker。本机没有把它当成已验证沙箱，发布快照改记为 native-trusted。")
 	}
 	doc, err := json.Marshal(report)
 	if err != nil {
 		return sqlite.ProfileVersion{}, err
 	}
 	if snap.Adapter != "fixture" {
-		if snap.BillingPath != "subscription" && snap.BillingPath != "metered_api" {
-			return sqlite.ProfileVersion{}, ErrUnexecutable
-		}
-		if strings.TrimSpace(snap.EntitlementVerifiedAt) == "" {
+		// An authorized model smoke is not implemented. A timestamp the user
+		// typed is not verification, so a real profile stays unexecutable.
+		if !report.Verified || !report.StaticPassed {
 			return sqlite.ProfileVersion{}, ErrUnexecutable
 		}
 	}
@@ -340,7 +352,9 @@ func (s *Service) SubmitExperiment(ctx context.Context, req ExperimentRequest) (
 }
 
 func (s *Service) Loop(ctx context.Context) error {
-	_ = s.Recover(ctx)
+	if err := s.Recover(ctx); err != nil {
+		s.noteFatal(err)
+	}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -352,7 +366,9 @@ func (s *Service) Loop(ctx context.Context) error {
 				continue
 			}
 			s.RetryNotifications(ctx)
-			_ = s.Pump(ctx, s.limit())
+			if err := s.Pump(ctx, s.limit()); err != nil && fatalStore(err) {
+				s.noteFatal(err)
+			}
 		}
 	}
 }
@@ -412,7 +428,15 @@ func (s *Service) Pump(ctx context.Context, globalLimit int) error {
 		go func(trial sqlite.Trial, attempt sqlite.Attempt) {
 			defer wg.Done()
 			if err := s.execute(ctx, trial, attempt); err != nil {
-				_ = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), err.Error())
+				if errors.Is(err, sqlite.ErrConflict) {
+					_ = s.finishCancelled(ctx, trial.ID, attempt)
+					return
+				}
+				if fatalStore(err) {
+					s.noteFatal(err)
+					return
+				}
+				_ = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupQuarantined), err.Error())
 			}
 			s.scheduleRepair(ctx, trial.ID)
 		}(trial, attempt)
@@ -441,8 +465,17 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	if profile.Adapter == "" {
 		profile.Adapter = "fixture"
 	}
+	if profile.Adapter != "fixture" || profile.FakeMode != "" && profile.Adapter != "fixture" {
+		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "profile_not_verified")
+	}
+	if err := validateExecution(profile); err != nil {
+		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "executor_rejected")
+	}
 	if profile.Adapter == "fixture" && profile.FakeMode == "" {
 		profile.FakeMode = "success"
+	}
+	if closed, err := s.finishIfCancelled(ctx, trial.ID, attempt); closed || err != nil {
+		return err
 	}
 	work := filepath.Join(s.DataDir, "attempts", attempt.ID, "work")
 	base := filepath.Join(s.DataDir, "attempts", attempt.ID, "baseline")
@@ -452,6 +485,12 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	src := snap.SnapshotDir
 	if (snap.SourceDir != "" || snap.VerifierRoot != "") && src == "" {
 		return errors.New("unfrozen task snapshot")
+	}
+	if src != "" && snap.ContentDigest != "" {
+		got, err := workspace.ContentDigest(src)
+		if err != nil || got != snap.ContentDigest {
+			return errors.New("snapshot digest mismatch")
+		}
 	}
 	if src == "" {
 		if err := os.MkdirAll(base, 0o755); err != nil {
@@ -503,10 +542,23 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		}
 	}
 	identityToken := domain.NewID("idn")
-	_ = s.Store.UpdateRuntime(ctx, attempt.ID, withIdentity(attempt.RuntimeJSON, identityToken, 0, ""))
+	runtime := withIdentity(attempt.RuntimeJSON, identityToken, 0, "")
+	runtime = mergeRuntime(runtime, map[string]any{"executor": profile.Executor, "network": profile.Network, "home_inherited": false})
+	_ = s.Store.UpdateRuntime(ctx, attempt.ID, runtime)
+	attemptDir := filepath.Join(s.DataDir, "attempts", attempt.ID)
+	control := filepath.Join(attemptDir, "control")
+	home := filepath.Join(control, "home")
+	tmp := filepath.Join(control, "tmp")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return err
+	}
 	spec := runner.Spec{
 		SchemaVersion: "agentlab.exec/v1", AttemptID: attempt.ID, Fence: attempt.Fence, Token: attempt.Token,
-		WorkDir: work, BaselineDir: base, Executor: "native-trusted", Network: "unrestricted", WallSeconds: s.wall(),
+		WorkDir: work, BaselineDir: base, Executor: profile.Executor, Network: profile.Network, WallSeconds: s.wall(),
+		ControlDir: control, HomeDir: home, TmpDir: tmp,
 		Launch: agent.LaunchSpec{Executable: exe, Args: []string{"fake-agent"}, Env: env, WorkDir: work},
 		Prompt: snap.Prompt, IdentityToken: identityToken,
 	}
@@ -525,16 +577,16 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		spec.Launch.Env = env
 	}
 	if profile.ResolvedModel != "" && profile.ResolvedModel != profile.Model {
-		_ = s.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(withIdentity(attempt.RuntimeJSON, identityToken, 0, ""), map[string]any{
+		runtime = mergeRuntime(runtime, map[string]any{
 			"model_resolution_mismatch": true,
 			"requested_model":           profile.Model,
 			"resolved_model":            profile.ResolvedModel,
-		}))
+		})
 	}
-	attemptDir := filepath.Join(s.DataDir, "attempts", attempt.ID)
-	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
+	if closed, err := s.finishIfCancelled(ctx, trial.ID, attempt); closed || err != nil {
 		return err
 	}
+	_ = s.Store.UpdateRuntime(ctx, attempt.ID, mergeRuntime(runtime, map[string]any{"launch_attempted": true}))
 	eventFile, err := os.OpenFile(filepath.Join(attemptDir, "events.ndjson"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -545,7 +597,9 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		queuedAt = parsed
 	}
 	runStart := time.Now()
-	runErr := s.runRunner(ctx, spec, output, trial.ID, attempt, identityToken)
+	verifyCtx, verifyCancel := context.WithCancel(ctx)
+	defer verifyCancel()
+	runErr := s.runRunner(ctx, spec, output, trial.ID, attempt, identityToken, verifyCancel)
 	agentMs := time.Since(runStart).Milliseconds()
 	queueMs := runStart.Sub(queuedAt).Milliseconds()
 	if queueMs < 0 {
@@ -557,12 +611,12 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	events := output.Bytes()
 	s.indexEvents(ctx, attempt.ID, events)
 	s.recordUsage(ctx, attempt.ID, events)
-	s.persistIdentity(ctx, attempt, identityToken)
+	s.persistIdentityFrom(ctx, attempt, identityToken, events)
 	if runErr != nil {
 		s.stampPhases(ctx, attempt, queueMs, agentMs, nil)
 		return runErr
 	}
-	_ = s.noteStarted(ctx, attempt)
+	_ = s.noteStartedFrom(ctx, attempt, events)
 	current, err := s.Store.GetAttempt(ctx, attempt.ID)
 	if err != nil {
 		return err
@@ -579,9 +633,16 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "authentication_failed")
 	}
 	verifyStart := time.Now()
-	verdict, cleanup, reason := s.judge(ctx, snap, profile, tv.Digest, attempt.ID, base, work, events)
+	verdict, cleanup, reason := s.judge(verifyCtx, snap, profile, tv.Digest, attempt.ID, base, work, events)
 	verifyMs := time.Since(verifyStart).Milliseconds()
 	s.stampPhases(ctx, attempt, queueMs, agentMs, &verifyMs)
+	if again, err := s.Store.GetTrial(ctx, trial.ID); err == nil && again.CancelRequested {
+		cancelled = true
+	}
+	if again, err := s.Store.GetAttempt(ctx, attempt.ID); err == nil && again.State == string(domain.ExecCancelling) {
+		cancelled = true
+		current = again
+	}
 	if cancelled {
 		if current.State == string(domain.ExecRunning) || current.State == string(domain.ExecPreparing) {
 			_ = s.Store.AdvanceAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCancelling))
@@ -602,11 +663,11 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	if reason != "" && verdict == domain.VerdictPass && profile.FakeMode == "forge" {
 		verdict = domain.VerdictInconclusive
 	}
-	if attempt.Reason == "protocol_repair" {
+	if attempt.Reason != "" && reason != attempt.Reason && !strings.HasPrefix(reason, attempt.Reason+":") {
 		if reason == "" {
-			reason = "protocol_repair"
+			reason = attempt.Reason
 		} else {
-			reason = "protocol_repair:" + reason
+			reason = attempt.Reason + ":" + reason
 		}
 	}
 	if err := s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCompleted), string(verdict), string(cleanup), reason); err != nil {
@@ -618,7 +679,7 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 
 // runRunner starts `agentlab runner` as its own process. That process does not
 // open the control database. A panic inside it cannot take down the control plane.
-func (s *Service) runRunner(ctx context.Context, spec runner.Spec, output *eventSink, trialID string, attempt sqlite.Attempt, identityToken string) error {
+func (s *Service) runRunner(ctx context.Context, spec runner.Spec, output *eventSink, trialID string, attempt sqlite.Attempt, identityToken string, onCancel func()) error {
 	bin := s.ExecPath
 	if bin == "" {
 		var err error
@@ -671,7 +732,7 @@ func (s *Service) runRunner(ctx context.Context, spec runner.Spec, output *event
 		return err
 	}
 	watchStop := make(chan struct{})
-	go s.watch(ctx, watchStop, stdin, trialID, attempt, identityToken)
+	go s.watch(ctx, watchStop, stdin, trialID, attempt, identityToken, output, onCancel)
 	waitErr := cmd.Wait()
 	close(watchStop)
 	_ = stdin.Close()
@@ -680,7 +741,7 @@ func (s *Service) runRunner(ctx context.Context, spec runner.Spec, output *event
 	return waitErr
 }
 
-func (s *Service) watch(ctx context.Context, stop <-chan struct{}, pw io.Writer, trialID string, attempt sqlite.Attempt, identityToken string) {
+func (s *Service) watch(ctx context.Context, stop <-chan struct{}, pw io.Writer, trialID string, attempt sqlite.Attempt, identityToken string, sink *eventSink, onCancel func()) {
 	ticker := time.NewTicker(30 * time.Millisecond)
 	defer ticker.Stop()
 	marked := false
@@ -693,18 +754,22 @@ func (s *Service) watch(ctx context.Context, stop <-chan struct{}, pw io.Writer,
 			s.writeControl(pw, "Shutdown", "context")
 			return
 		case <-ticker.C:
+			events := sink.Bytes()
 			if !savedIdentity {
-				if s.persistIdentity(ctx, attempt, identityToken) {
+				if s.persistIdentityFrom(ctx, attempt, identityToken, events) {
 					savedIdentity = true
 				}
 			}
 			if !marked {
-				if s.noteStarted(ctx, attempt) == nil {
+				if s.noteStartedFrom(ctx, attempt, events) == nil {
 					marked = true
 				}
 			}
 			trial, err := s.Store.GetTrial(ctx, trialID)
 			if err == nil && trial.CancelRequested {
+				if onCancel != nil {
+					onCancel()
+				}
 				s.writeControl(pw, "Cancel", "user")
 				return
 			}
@@ -720,12 +785,11 @@ func (s *Service) writeControl(pw io.Writer, typ, reason string) {
 	_, _ = pw.Write(append(b, '\n'))
 }
 
-func (s *Service) noteStarted(ctx context.Context, attempt sqlite.Attempt) error {
-	raw, err := os.ReadFile(filepath.Join(s.DataDir, "attempts", attempt.ID, "work", "journal.json"))
-	if err != nil || !bytesContains(raw, `"agent_start":"started"`) {
+func (s *Service) noteStartedFrom(ctx context.Context, attempt sqlite.Attempt, events []byte) error {
+	if !runnerEvent(events, "IdentityRecorded") {
 		return errors.New("not started")
 	}
-	err = s.Store.MarkAgentStarted(ctx, attempt.ID, attempt.Fence)
+	err := s.Store.MarkAgentStarted(ctx, attempt.ID, attempt.Fence)
 	if errors.Is(err, sqlite.ErrConflict) {
 		return nil
 	}
@@ -736,6 +800,7 @@ func (s *Service) judge(ctx context.Context, snap TaskSnapshot, profile ProfileS
 	cleanup := domain.CleanupClean
 	if runnerQuarantined(events) {
 		cleanup = domain.CleanupQuarantined
+		return domain.VerdictInconclusive, cleanup, "cleanup_unproven"
 	}
 	if snap.VerifierRoot == "" {
 		return domain.VerdictUnverified, cleanup, ""
@@ -748,17 +813,24 @@ func (s *Service) judge(ctx context.Context, snap TaskSnapshot, profile ProfileS
 	if err != nil {
 		return domain.VerdictInconclusive, cleanup, "verifier_error"
 	}
+	if err := s.recordPatch(ctx, attemptID, patch); err != nil {
+		return domain.VerdictInconclusive, cleanup, "evidence_missing"
+	}
+	if err := s.recordLogs(ctx, attemptID, out.Logs); err != nil {
+		return domain.VerdictInconclusive, cleanup, "evidence_missing"
+	}
 	for _, check := range out.Checks {
-		_ = s.Store.InsertCheck(ctx, attemptID, verifierDigest, check, 1)
+		if err := s.Store.InsertCheck(ctx, attemptID, verifierDigest, check, 1); err != nil {
+			return domain.VerdictInconclusive, cleanup, "evidence_missing"
+		}
 	}
 	if profile.FakeMode == "forge" && out.Verdict == domain.VerdictPass {
 		return domain.VerdictInconclusive, cleanup, "forged output cannot pass"
 	}
 	reason := ""
 	if !out.EvidenceComplete {
-		reason = "evidence_incomplete"
+		return domain.VerdictInconclusive, cleanup, "evidence_incomplete"
 	}
-	_ = s.recordPatch(ctx, attemptID, patch)
 	return out.Verdict, cleanup, reason
 }
 
@@ -796,8 +868,10 @@ func (s *Service) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var recoverErr error
 	for _, attempt := range open {
 		started := attempt.AgentStarted
+		launched := runtimeFlag(attempt.RuntimeJSON, "launch_attempted")
 		pid, startTime, confirmedRecord := runtimeIdentity(attempt.RuntimeJSON)
 		confirmed := false
 		alive := false
@@ -818,12 +892,14 @@ func (s *Service) Recover(ctx context.Context) error {
 				confirmed = false
 				alive = true
 			}
-		} else if started {
-			// The journal is agent-writable. Without a control-plane identity, quarantine.
-			alive = true
-			confirmed = false
 		}
 		decision := scheduler.Reconcile(started, alive, confirmed, 0)
+		if !confirmedRecord && (launched || started) {
+			decision.Cleanup = domain.CleanupQuarantined
+			decision.Reason = "identity_missing"
+			decision.State = domain.ExecAborted
+			decision.Verdict = domain.VerdictInconclusive
+		}
 		if alive && !confirmed {
 			decision.Cleanup = domain.CleanupQuarantined
 			decision.Reason = "identity_unconfirmed"
@@ -833,11 +909,16 @@ func (s *Service) Recover(ctx context.Context) error {
 			decision.Reason = "identity_confirmed_but_still_alive"
 		}
 		if decision.Cleanup == domain.CleanupQuarantined {
-			_ = s.Store.Audit(ctx, "control", "cleanup", attempt.ID, `{"cleanup":"quarantined"}`)
+			if err := s.Store.Audit(ctx, "control", "cleanup", attempt.ID, `{"cleanup":"quarantined","reason":"`+decision.Reason+`"}`); err != nil && recoverErr == nil {
+				recoverErr = err
+			}
 		}
-		_ = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(decision.State), string(decision.Verdict), string(decision.Cleanup), decision.Reason)
+		if err := s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(decision.State), string(decision.Verdict), string(decision.Cleanup), decision.Reason); err != nil && recoverErr == nil {
+			recoverErr = err
+			_ = s.Store.Audit(ctx, "control", "recover_failed", attempt.ID, `{}`)
+		}
 	}
-	return nil
+	return recoverErr
 }
 
 func (s *Service) Events(attemptID string) ([]byte, error) {
@@ -922,11 +1003,7 @@ func (e *eventSink) Bytes() []byte {
 	return append([]byte(nil), e.mem...)
 }
 
-func (s *Service) persistIdentity(ctx context.Context, attempt sqlite.Attempt, token string) bool {
-	raw, err := os.ReadFile(filepath.Join(s.DataDir, "attempts", attempt.ID, "events.ndjson"))
-	if err != nil {
-		return false
-	}
+func (s *Service) persistIdentityFrom(ctx context.Context, attempt sqlite.Attempt, token string, raw []byte) bool {
 	var pid int
 	var start string
 	found := false
@@ -970,11 +1047,15 @@ func withIdentity(runtime, token string, pid int, start string) string {
 	if m == nil {
 		m = map[string]any{}
 	}
-	m["executor"] = "native-trusted"
-	m["network"] = "unrestricted"
-	m["home_inherited"] = true
+	if _, ok := m["executor"]; !ok {
+		m["executor"] = "native-trusted"
+	}
+	if _, ok := m["network"]; !ok {
+		m["network"] = "unrestricted"
+	}
+	m["home_inherited"] = false
 	m["isolation"] = "observational/native"
-	m["limitation"] = "继承了控制进程的 HOME，未做隔离加载"
+	m["limitation"] = "HOME 是本次运行的空目录。同一用户仍能访问控制面文件，这不是容器隔离。"
 	if token != "" {
 		m["identity_token"] = token
 	}
@@ -1270,6 +1351,124 @@ func mergeRuntime(base string, extra map[string]any) string {
 		return base
 	}
 	return string(body)
+}
+
+func validateExecution(snap ProfileSnapshot) error {
+	if snap.Executor != "native-trusted" {
+		return fmt.Errorf("%w: executor %q is not a verified sandbox", ErrUnexecutable, snap.Executor)
+	}
+	if snap.Network != "unrestricted" {
+		return fmt.Errorf("%w: network %q is not enforced", ErrUnexecutable, snap.Network)
+	}
+	return nil
+}
+
+func (s *Service) finishIfCancelled(ctx context.Context, trialID string, attempt sqlite.Attempt) (bool, error) {
+	fresh, err := s.Store.GetTrial(ctx, trialID)
+	if err != nil {
+		return false, err
+	}
+	current, err := s.Store.GetAttempt(ctx, attempt.ID)
+	if err != nil {
+		return false, err
+	}
+	if !fresh.CancelRequested && current.State != string(domain.ExecCancelling) {
+		return false, nil
+	}
+	if err := s.finishCancelled(ctx, trialID, attempt); err != nil && !errors.Is(err, sqlite.ErrConflict) {
+		return true, err
+	}
+	return true, nil
+}
+
+func (s *Service) finishCancelled(ctx context.Context, trialID string, attempt sqlite.Attempt) error {
+	current, err := s.Store.GetAttempt(ctx, attempt.ID)
+	if err != nil {
+		return err
+	}
+	if domain.ExecutionState(current.State).Terminal() {
+		return nil
+	}
+	if current.State != string(domain.ExecCancelling) {
+		if err := s.Store.AdvanceAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCancelling)); err != nil && !errors.Is(err, sqlite.ErrConflict) {
+			return err
+		}
+	}
+	err = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecCancelled), string(domain.VerdictUnverified), string(domain.CleanupClean), "cancelled")
+	if errors.Is(err, sqlite.ErrConflict) {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) recordLogs(ctx context.Context, attemptID string, logs []verifier.Log) error {
+	dir := filepath.Join(s.DataDir, "attempts", attemptID, "checks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, log := range logs {
+		if log.Name == "" {
+			continue
+		}
+		path := filepath.Join(dir, log.Name+".log")
+		if err := os.WriteFile(path, log.Body, 0o644); err != nil {
+			return err
+		}
+		sum := sha256.Sum256(log.Body)
+		if _, err := s.Store.InsertArtifact(ctx, sqlite.Artifact{
+			AttemptID: attemptID, Kind: "check-log", Digest: hex.EncodeToString(sum[:]),
+			Bytes: int64(len(log.Body)), StorageKey: path, Status: "present",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) noteFatal(err error) {
+	if err == nil {
+		return
+	}
+	s.maint.Store(true)
+	s.fatal.Store(err.Error())
+}
+
+func (s *Service) FatalError() string {
+	v, _ := s.fatal.Load().(string)
+	return v
+}
+
+func fatalStore(err error) bool {
+	if err == nil || errors.Is(err, sqlite.ErrConflict) || errors.Is(err, sqlite.ErrCapacity) || errors.Is(err, sqlite.ErrAccountBlocked) || errors.Is(err, sqlite.ErrNotFound) || errors.Is(err, ErrUnexecutable) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "database is closed") || strings.Contains(text, "disk I/O") || strings.Contains(text, "unable to open") || strings.Contains(text, "readonly")
+}
+
+func runtimeFlag(runtime, key string) bool {
+	var doc map[string]any
+	if json.Unmarshal([]byte(runtime), &doc) != nil {
+		return false
+	}
+	v, _ := doc[key].(bool)
+	return v
+}
+
+func runnerEvent(events []byte, typ string) bool {
+	for _, line := range bytesSplit(events) {
+		var ev struct {
+			Origin string `json:"origin"`
+			Type   string `json:"type"`
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if ev.Origin == "runner" && ev.Type == typ {
+			return true
+		}
+	}
+	return false
 }
 
 func HashToken(token string) string {

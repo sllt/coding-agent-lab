@@ -229,6 +229,22 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) e
 	})
 }
 
+// CreateAdmin inserts the only administrator. The count and insert share one
+// write transaction, so concurrent setup calls cannot each succeed.
+func (s *Store) CreateAdmin(ctx context.Context, username, passwordHash string) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return ErrAdminExists
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO users(id, username, password_hash, created_at) VALUES(?,?,?,?)`, domain.NewID("usr"), username, passwordHash, now())
+		return err
+	})
+}
+
 func (s *Store) UserCount(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&n)
@@ -428,8 +444,14 @@ func (s *Store) MarkAgentStarted(ctx context.Context, attemptID string, fence in
 		if n != 1 {
 			return ErrConflict
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE trials SET execution_state=? WHERE current_attempt_id=?`, string(domain.ExecRunning), attemptID)
-		return err
+		if _, err = tx.ExecContext(ctx, `UPDATE trials SET execution_state=? WHERE current_attempt_id=?`, string(domain.ExecRunning), attemptID); err != nil {
+			return err
+		}
+		var experimentID string
+		if err := tx.QueryRowContext(ctx, `SELECT experiment_id FROM trials WHERE current_attempt_id=?`, attemptID).Scan(&experimentID); err != nil {
+			return err
+		}
+		return rollupExperiment(ctx, tx, experimentID)
 	})
 }
 
@@ -506,8 +528,33 @@ func (s *Store) AdvanceAttempt(ctx context.Context, attemptID string, fence int6
 		if n != 1 {
 			return ErrConflict
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE trials SET execution_state=? WHERE current_attempt_id=?`, to, attemptID)
-		return err
+		if _, err = tx.ExecContext(ctx, `UPDATE trials SET execution_state=? WHERE current_attempt_id=?`, to, attemptID); err != nil {
+			return err
+		}
+		var experimentID string
+		if err := tx.QueryRowContext(ctx, `SELECT experiment_id FROM trials WHERE current_attempt_id=?`, attemptID).Scan(&experimentID); err != nil {
+			return err
+		}
+		return rollupExperiment(ctx, tx, experimentID)
+	})
+}
+
+// RequestRetry records a human retry intent without creating an Attempt.
+// The scheduler is the only caller that claims capacity and starts work.
+func (s *Store) RequestRetry(ctx context.Context, trialID, reason string) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE trials SET cancel_requested=0, execution_state=?, verdict=?, retry_reason=? WHERE id=? AND execution_state IN ('completed','cancelled','aborted')`, string(domain.ExecQueued), string(domain.VerdictUnverified), reason, trialID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrConflict
+		}
+		return nil
 	})
 }
 
@@ -580,7 +627,7 @@ func scanArtifacts(rows *sql.Rows) ([]Artifact, error) {
 }
 
 func (s *Store) ListUsage(ctx context.Context, attemptID string) ([]domain.Usage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT measures_json FROM usage_records WHERE attempt_id=? ORDER BY id`, attemptID)
+	rows, err := s.db.QueryContext(ctx, `SELECT measures_json FROM usage_records WHERE attempt_id=? ORDER BY source, CAST(source_event_id AS INTEGER), source_event_id`, attemptID)
 	if err != nil {
 		return nil, err
 	}

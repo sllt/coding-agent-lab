@@ -212,7 +212,7 @@ func TestExportLinkComparisonsAndOpenAPIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	board := call(rt, http.MethodGet, "/api/v1/comparisons?experiment_id="+exp.ID, nil, token, csrf)
-	if board.Code != http.StatusOK || strings.Contains(board.Body.String(), `"executor":"docker"`) || !strings.Contains(board.Body.String(), `"executor":"native-trusted"`) || !strings.Contains(board.Body.String(), `"network":"unrestricted"`) {
+	if board.Code != http.StatusOK || !strings.Contains(board.Body.String(), `"executor":"docker"`) || !strings.Contains(board.Body.String(), `"network":"restricted"`) || !strings.Contains(board.Body.String(), `"comparable":false`) {
 		t.Fatalf("compare %d %s", board.Code, board.Body.String())
 	}
 	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "openapi.yaml"))
@@ -248,4 +248,171 @@ func TestExportLinkComparisonsAndOpenAPIContract(t *testing.T) {
 	if err != nil || !strings.Contains(string(client), "requestJSON") || !strings.Contains(string(client), "#/components/schemas/ExperimentPlan") {
 		t.Fatalf("generated client missing: %v", err)
 	}
+}
+
+func TestRetryDoesNotCreateAttemptUntilPump(t *testing.T) {
+	_, rt, svc := newAPI(t)
+	token, csrf := setupLogin(t, rt)
+	ctx := context.Background()
+	task, profile := publishPair(t, svc)
+	exp, err := svc.SubmitExperiment(ctx, app.ExperimentRequest{Actor: "local", IdempotencyKey: "retry", Mode: domain.ModeAgentProfile, TaskVersionIDs: []string{task}, ProfileVersionIDs: []string{profile}, Repetitions: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trials, err := svc.Store.ListTrials(ctx, exp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := svc.Store.ProfileAccount(ctx, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := svc.Store.CreateAttempt(ctx, trials[0].ID, account, app.NativeRuntime(), "", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Store.DB().Exec(`UPDATE attempts SET state=?, verdict=?, cleanup_state=? WHERE id=?`, string(domain.ExecCompleted), string(domain.VerdictFail), string(domain.CleanupClean), attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Store.DB().Exec(`UPDATE trials SET execution_state=?, verdict=? WHERE id=?`, string(domain.ExecCompleted), string(domain.VerdictFail), trials[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	retried := call(rt, http.MethodPost, "/api/v1/trials/"+trials[0].ID+"/attempts", map[string]any{"reason": "人工复核"}, token, csrf)
+	if retried.Code != http.StatusAccepted {
+		t.Fatalf("retry %d %s", retried.Code, retried.Body.String())
+	}
+	pending, err := svc.Store.ListAttempts(ctx, trials[0].ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("retry created an attempt early: %+v %v", pending, err)
+	}
+	if err := svc.Pump(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := svc.Store.ListAttempts(ctx, trials[0].ID)
+	if err != nil || len(attempts) != 2 || attempts[1].Reason != "人工复核" {
+		t.Fatalf("%+v %v", attempts, err)
+	}
+}
+
+func TestSecondExportDoesNotOverwrite(t *testing.T) {
+	_, rt, svc := newAPI(t)
+	token, csrf := setupLogin(t, rt)
+	ctx := context.Background()
+	task, profile := publishPair(t, svc)
+	exp, err := svc.SubmitExperiment(ctx, app.ExperimentRequest{Actor: "local", IdempotencyKey: "exp-export", Mode: domain.ModeAgentProfile, TaskVersionIDs: []string{task}, ProfileVersionIDs: []string{profile}, Repetitions: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := call(rt, http.MethodPost, "/api/v1/experiments/"+exp.ID+"/export", map[string]any{}, token, csrf)
+	second := call(rt, http.MethodPost, "/api/v1/experiments/"+exp.ID+"/export", map[string]any{}, token, csrf)
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("export %d %s / %d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
+	}
+	id1 := artifactID(t, first.Body.Bytes())
+	id2 := artifactID(t, second.Body.Bytes())
+	if id1 == id2 {
+		t.Fatal("exports shared an artifact id")
+	}
+	a1, err := svc.Store.GetArtifact(ctx, id1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := svc.Store.GetArtifact(ctx, id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a1.StorageKey == a2.StorageKey {
+		t.Fatal("exports shared a file")
+	}
+	original, err := os.ReadFile(a1.StorageKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(a2.StorageKey); err != nil {
+		t.Fatal(err)
+	}
+	again, err := os.ReadFile(a1.StorageKey)
+	if err != nil || string(again) != string(original) {
+		t.Fatal("first export bytes changed")
+	}
+	if err := os.WriteFile(a1.StorageKey, append(original, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tampered := call(rt, http.MethodGet, "/api/v1/artifacts/"+id1+"/download", nil, token, csrf)
+	if tampered.Code != http.StatusConflict {
+		t.Fatalf("tampered download %d %s", tampered.Code, tampered.Body.String())
+	}
+}
+
+func TestLiveSSEFlushesTheFirstFrame(t *testing.T) {
+	_, rt, svc := newAPI(t)
+	token, _ := setupLogin(t, rt)
+	ctx := context.Background()
+	task, profile := publishPair(t, svc)
+	exp, err := svc.SubmitExperiment(ctx, app.ExperimentRequest{Actor: "local", IdempotencyKey: "sse", Mode: domain.ModeAgentProfile, TaskVersionIDs: []string{task}, ProfileVersionIDs: []string{profile}, Repetitions: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trials, err := svc.Store.ListTrials(ctx, exp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := svc.Store.ProfileAccount(ctx, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := svc.Store.CreateAttempt(ctx, trials[0].ID, account, app.NativeRuntime(), "", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(svc.DataDir, "attempts", attempt.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "events.ndjson"), []byte("{\"sequence\":1,\"type\":\"Ready\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(rt.Handler)
+	t.Cleanup(srv.Close)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/attempts/"+attempt.ID+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: "agentlab_session", Value: token})
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		ch <- result{resp, err}
+	}()
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		defer got.resp.Body.Close()
+		buf := make([]byte, 128)
+		n, err := got.resp.Body.Read(buf)
+		if err != nil || !strings.Contains(string(buf[:n]), "Ready") {
+			t.Fatalf("first frame %q %v", buf[:n], err)
+		}
+	case <-time.After(800 * time.Millisecond):
+		t.Fatal("SSE headers were not flushed on the open connection")
+	}
+}
+
+func artifactID(t *testing.T, body []byte) string {
+	t.Helper()
+	var box struct {
+		Data struct {
+			ID string `json:"artifact_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &box); err != nil || box.Data.ID == "" {
+		t.Fatalf("artifact id %s", body)
+	}
+	return box.Data.ID
 }

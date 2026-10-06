@@ -1,0 +1,1 @@
+ALTER TABLE trials ADD COLUMN retry_reason TEXT NOT NULL DEFAULT '';

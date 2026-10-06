@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -145,5 +147,78 @@ func TestPathEscapeIsRejectedOnApply(t *testing.T) {
 	patch := Patch{Changes: []Change{{Path: "../outside.txt", Action: "add", Digest: "x", Content: []byte("no")}}}
 	if _, err := Apply(base, t.TempDir(), patch, Limits{}); err == nil {
 		t.Fatal("path escape applied")
+	}
+}
+
+func TestPatchRoundTripKeepsBytesAndMode(t *testing.T) {
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "run.sh"), []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	next := t.TempDir()
+	if err := CopyBaseline(base, next, Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("#!/bin/sh\necho ok\n")
+	if err := os.WriteFile(filepath.Join(next, "run.sh"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(next, "run.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := Collect(base, next, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again Patch
+	if err := json.Unmarshal(raw, &again); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Changes) != 1 || string(again.Changes[0].Content) != string(body) || again.Changes[0].Mode != 0o755 {
+		t.Fatalf("round trip %+v", again.Changes)
+	}
+	dest := t.TempDir()
+	if _, err := Apply(base, dest, again, Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dest, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	bad := again
+	bad.Digest = "not-the-tree"
+	if _, err := Apply(base, t.TempDir(), bad, Limits{}); err == nil {
+		t.Fatal("wrong tree digest was accepted")
+	}
+}
+
+func TestCopyRejectsOverlapAndDeepTrees(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyBaseline(src, filepath.Join(src, "inside"), Limits{}); !errors.Is(err, ErrOverlap) {
+		t.Fatalf("overlap err %v", err)
+	}
+	deep := t.TempDir()
+	cur := deep
+	for i := 0; i < 40; i++ {
+		cur = filepath.Join(cur, "d")
+	}
+	if err := os.MkdirAll(cur, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cur, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyBaseline(deep, t.TempDir(), Limits{}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("depth err %v", err)
 	}
 }

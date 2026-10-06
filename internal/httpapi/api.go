@@ -707,26 +707,17 @@ func (a *API) retryTrial(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	if err := a.svc.Store.PrepareRetry(c, trial.ID); err != nil {
+	if err := a.svc.Store.RequestRetry(c, trial.ID, body.Reason); err != nil {
 		return a.fromErr(c, err)
 	}
 	if trial.CurrentAttemptID != "" {
 		_ = a.svc.Store.InsertIntervention(c, trial.CurrentAttemptID, "manual_retry", body.Reason)
 	}
-	account, err := a.svc.Store.ProfileAccount(c, trial.ProfileVersionID)
-	if err != nil {
-		return a.fromErr(c, err)
-	}
-	limit := a.svc.GlobalLimit
-	if limit <= 0 {
-		limit = 1
-	}
-	attempt, err := a.svc.Store.CreateAttempt(c, trial.ID, account, app.NativeRuntime(), body.Reason, limit, 1)
-	if err != nil {
-		return a.fromErr(c, err)
-	}
-	attempt.Token = ""
-	return ok(c, http.StatusAccepted, map[string]any{"attempt": attempt, "note": "新 Attempt 不会改写上一次的结论。"})
+	return ok(c, http.StatusAccepted, map[string]any{
+		"scheduled": true,
+		"reason":    body.Reason,
+		"note":      "已记下重试原因。调度器占位成功后才会启动，拒绝不会留下排队中的 Attempt。",
+	})
 }
 
 func (a *API) getTrial(c *pi.Context) (any, error) {
@@ -766,8 +757,13 @@ func (a *API) artifacts(c *pi.Context) (any, error) {
 		status := item.Status
 		if !a.underData(item.StorageKey) {
 			status = "missing"
-		} else if _, err := os.Stat(item.StorageKey); err != nil {
+		} else if body, err := os.ReadFile(item.StorageKey); err != nil {
 			status = "missing"
+		} else {
+			sum := sha256.Sum256(body)
+			if hex.EncodeToString(sum[:]) != item.Digest {
+				status = "tampered"
+			}
 		}
 		out = append(out, map[string]any{"id": item.ID, "kind": item.Kind, "digest": item.Digest, "bytes": item.Bytes, "status": status})
 	}
@@ -859,6 +855,10 @@ func (a *API) download(c *pi.Context) (any, error) {
 	body, err := os.ReadFile(item.StorageKey)
 	if err != nil {
 		return fail(c, http.StatusNotFound, "not_found", "制品文件缺失")
+	}
+	sum := sha256.Sum256(body)
+	if hex.EncodeToString(sum[:]) != item.Digest {
+		return fail(c, http.StatusConflict, "conflict", "制品内容和登记摘要不一致")
 	}
 	return response.Stream{StatusCode: http.StatusOK, ContentType: "application/octet-stream", Run: func(_ context.Context, w io.Writer) error {
 		_, err := w.Write(body)
@@ -970,16 +970,13 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 			excluded = append(excluded, trial.TaskVersionID)
 			continue
 		}
-		if executor == "" || executor == "docker" {
-			executor = "native-trusted"
-		}
-		if network == "" || network == "restricted" {
-			network = "unrestricted"
-		}
 		tasks[trial.TaskVersionID] = struct{}{}
 		profileDig := pv.Digest
 		if exp.Mode == domain.ModeControlledModel {
-			profileDig, _ = domain.Digest(map[string]any{"adapter": snap.Adapter, "executor": executor, "network": network})
+			stripped := snap
+			stripped.Model = ""
+			stripped.ResolvedModel = ""
+			profileDig, _ = domain.Digest(stripped)
 		}
 		pass, fail, unresolved := 0, 0, 0
 		if terminal {
@@ -1022,9 +1019,10 @@ func (a *API) settings(c *pi.Context) (any, error) {
 	_, err := os.Stat(filepath.Join(a.svc.DataDir, "webhook.secret"))
 	return ok(c, http.StatusOK, map[string]any{
 		"executor_default":   "native-trusted",
-		"executor_note":      "本机进程执行，不提供容器级隔离。Docker 参数可以生成，但本机没有把它当成已验证的沙箱。",
+		"executor_note":      "只有明确选择 native-trusted 且网络为 unrestricted 的配置可以发布。Docker、offline 和 restricted 会被拒绝，不会改成本机执行。",
 		"network_restricted": "未实现",
 		"maintenance":        a.svc.Maintenance(),
+		"store_error":        a.svc.FatalError(),
 		"webhook_configured": err == nil,
 		"credential_display": "只显示引用，不回传密钥",
 		"global_limit":       a.svc.LoadSettings().GlobalLimit,
@@ -1134,14 +1132,34 @@ func (a *API) exportExperiment(c *pi.Context) (any, error) {
 		return a.fromErr(c, err)
 	}
 	type row struct {
-		TrialID string   `json:"trial_id"`
-		State   string   `json:"execution_state"`
-		Verdict string   `json:"verdict"`
-		Checks  []string `json:"checks"`
+		TrialID    string           `json:"trial_id"`
+		State      string           `json:"execution_state"`
+		Verdict    string           `json:"verdict"`
+		Checks     []string         `json:"checks"`
+		Attempts   []map[string]any `json:"attempts"`
+		TaskDigest string           `json:"task_digest"`
 	}
 	var rows []row
 	for _, trial := range trials {
 		item := row{TrialID: trial.ID, State: trial.ExecutionState, Verdict: trial.Verdict}
+		if tv, err := a.svc.Store.GetTaskVersion(c, trial.TaskVersionID); err == nil {
+			item.TaskDigest = tv.Digest
+		}
+		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil {
+			for _, attempt := range attempts {
+				usage, _ := a.svc.Store.ListUsage(c, attempt.ID)
+				arts, _ := a.svc.Store.ListArtifacts(c, attempt.ID)
+				refs := []map[string]any{}
+				for _, art := range arts {
+					refs = append(refs, map[string]any{"id": art.ID, "kind": art.Kind, "digest": art.Digest, "bytes": art.Bytes})
+				}
+				item.Attempts = append(item.Attempts, map[string]any{
+					"id": attempt.ID, "number": attempt.Number, "state": attempt.State,
+					"verdict": attempt.Verdict, "cleanup": attempt.CleanupState, "reason": attempt.Reason,
+					"usage_records": len(usage), "artifacts": refs,
+				})
+			}
+		}
 		if trial.CurrentAttemptID != "" {
 			item.Checks, _ = a.svc.Store.ListChecks(c, trial.CurrentAttemptID)
 		}
@@ -1149,12 +1167,12 @@ func (a *API) exportExperiment(c *pi.Context) (any, error) {
 	}
 	payload := map[string]any{
 		"schema_version": "agentlab.export/v1",
-		"experiment_id":  exp.ID, "protocol": exp.ProtocolJSON, "trials": rows,
+		"experiment_id":  exp.ID, "protocol": exp.ProtocolJSON, "state": exp.State, "trials": rows,
 		"included_credentials": false, "included_reference_solution": false,
 		"truncated": false, "redacted": false,
 		"tool_version": "agentlab",
-		"note":         "导出不含凭据、隐藏测试和参考解。截断和脱敏标记为 false 表示这份 JSON 没有裁掉字段；原始日志仍可能在 Attempt 文件里被 8 MiB 内存上限截断。",
-		"manifest":     map[string]any{"files": []string{"report.json"}, "missing": []string{}},
+		"note":         "导出不含凭据、隐藏测试和参考解。每次导出是独立文件，不会覆盖上一份。",
+		"manifest":     map[string]any{"schema": "agentlab.export/v1", "missing": []string{}},
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -1164,7 +1182,7 @@ func (a *API) exportExperiment(c *pi.Context) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return a.fromErr(c, err)
 	}
-	path := filepath.Join(dir, exp.ID+".json")
+	path := filepath.Join(dir, domain.NewID("export")+".json")
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		return a.fromErr(c, err)
 	}
@@ -1355,6 +1373,12 @@ func parseLast(v any) int64 {
 	return n
 }
 
+func flushWriter(w io.Writer) {
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last int64, once bool) error {
 	body, err := os.ReadFile(path)
 	if err != nil && last > 0 {
@@ -1385,6 +1409,7 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 			return err
 		}
 	}
+	flushWriter(w)
 	if once {
 		return nil
 	}
@@ -1401,6 +1426,7 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 			if _, err = io.WriteString(w, ": heartbeat\n\n"); err != nil {
 				return err
 			}
+			flushWriter(w)
 		case <-ticker.C:
 			body, err = os.ReadFile(path)
 			if err != nil {
@@ -1412,6 +1438,9 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 				if _, err = io.WriteString(w, "id: "+attemptID+":"+strconv.FormatInt(seq, 10)+"\ndata: "+string(line)+"\n\n"); err != nil {
 					return err
 				}
+			}
+			if len(lines) != seen {
+				flushWriter(w)
 			}
 			seen = len(lines)
 		}

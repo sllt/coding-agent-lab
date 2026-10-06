@@ -140,6 +140,18 @@ func TestFingerprintsAndComparisonDoNotMergeUnlikeRuns(t *testing.T) {
 	if err != nil || ok || !contains(reasons, "executor_mismatch") {
 		t.Fatalf("executor mismatch ok=%v reasons=%v", ok, reasons)
 	}
+	unbudgeted := a
+	unbudgeted.BudgetDigest = "unspecified"
+	got, err = ComparisonOf(unbudgeted)
+	if err != nil || got.Comparable || !contains(got.Reasons, "budget_not_recorded") {
+		t.Fatalf("unspecified budget %+v %v", got, err)
+	}
+	offline := a
+	offline.Network = "offline"
+	got, err = ComparisonOf(offline)
+	if err != nil || got.Comparable || !contains(got.Reasons, "network_not_enforced") {
+		t.Fatalf("offline network %+v %v", got, err)
+	}
 }
 
 func TestDraftExamplesRejectPlaceholdersAndUnknownFields(t *testing.T) {

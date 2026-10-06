@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,11 +13,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sllt/agentlab/internal/agent/fixture"
 	"github.com/sllt/agentlab/internal/app"
 	"github.com/sllt/agentlab/internal/bootstrap"
 	"github.com/sllt/agentlab/internal/domain"
+	"github.com/sllt/agentlab/internal/runner"
 	"github.com/sllt/agentlab/internal/store/sqlite"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "fake-agent" {
+		os.Exit(fixture.Run())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "runner" {
+		if err := runner.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestUnauthenticatedAndBadCSRF(t *testing.T) {
 	_, rt, _ := newAPI(t)

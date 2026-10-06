@@ -91,7 +91,7 @@ export function TrialDetail() {
           <p>当前 Trial 行：{label(verdictLabel, trial.Verdict)}。对比和实验摘要使用第一次物理执行的结论。</p>
           <p>清理：{current ? label(cleanupLabel, current.CleanupState) : '尚未启动'}</p>
           <p className="mt-2 text-sm text-[#6b6258]">任务版本 {trial.TaskVersionID || '未知'} · 配置版本 {trial.ProfileVersionID || '未知'} · 开始 {current?.CreatedAt || '未知'} · 费用预算 未知。{phaseLine(current?.RuntimeJSON)}</p>
-          <p className="mt-2 text-sm text-[#6b6258]">native-trusted：本机进程执行，继承控制进程的 HOME，不提供容器级隔离。Agent 自己说的 PASS 不会变成这里的结论。</p>
+          <p className="mt-2 text-sm text-[#6b6258]">native-trusted：本机进程，HOME 是这次运行的空目录。同一用户仍能读到控制面文件，这不是容器隔离。Agent 自己说的 PASS 不会变成这里的结论。</p>
         </Card>
       ) : null}
       {calibrated ? <Notice tone="warn">这次通过来自参考解校准：事件里有 copied solution files。这是假 CLI 的校准路径，不是一次未标明的模型运行。</Notice> : null}

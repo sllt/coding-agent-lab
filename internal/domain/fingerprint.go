@@ -84,9 +84,17 @@ func ComparisonOf(in ComparisonInput) (Comparison, error) {
 		out.Comparable = false
 		out.Reasons = append(out.Reasons, "model_resolution_mismatch")
 	}
-	if in.Network == "restricted" {
+	if in.Network == "restricted" || in.Network == "offline" || in.Network == "" {
 		out.Comparable = false
-		out.Reasons = append(out.Reasons, "network_restriction_not_enforced")
+		out.Reasons = append(out.Reasons, "network_not_enforced")
+	}
+	if in.BudgetDigest == "" || in.BudgetDigest == "unspecified" {
+		out.Comparable = false
+		out.Reasons = append(out.Reasons, "budget_not_recorded")
+	}
+	if in.Executor != "" && in.Executor != "native-trusted" && in.Executor != "docker" {
+		out.Comparable = false
+		out.Reasons = append(out.Reasons, "executor_unverified")
 	}
 	return out, nil
 }

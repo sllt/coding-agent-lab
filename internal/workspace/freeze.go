@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -65,15 +66,17 @@ func WithinAllowed(src string, roots, deny []string) error {
 	return fmt.Errorf("%w: %s", ErrNotAllowed, abs)
 }
 
-// Freeze copies src into destRoot/<content digest> and returns that directory,
-// the content digest, and a commit id. A directory that is not its own git
-// root is pinned by content digest instead of a parent repository's HEAD.
+// Freeze copies src into destRoot/<pre-image digest> and returns that directory,
+// the digest of the frozen tree, and a resolved commit id. A directory that is
+// not its own git root is pinned as content:<digest> instead of a parent HEAD.
+// The returned digest is recomputed from the snapshot, so a later edit of src
+// cannot change what execution reads.
 func Freeze(src, destRoot string) (dir, digest, commit string, err error) {
-	digest, err = ContentDigest(src)
+	key, err := ContentDigest(src)
 	if err != nil {
 		return "", "", "", err
 	}
-	dir = filepath.Join(destRoot, digest)
+	dir = filepath.Join(destRoot, key)
 	if _, statErr := os.Stat(dir); statErr != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", "", "", err
@@ -81,12 +84,53 @@ func Freeze(src, destRoot string) (dir, digest, commit string, err error) {
 		if err := CopyBaseline(src, dir, Limits{}); err != nil {
 			return "", "", "", err
 		}
+		if err := writeManifest(dir); err != nil {
+			return "", "", "", err
+		}
+	}
+	digest, err = ContentDigest(dir)
+	if err != nil {
+		return "", "", "", err
 	}
 	commit = gitCommit(src)
 	if commit == "" {
 		commit = "content:" + digest
 	}
 	return dir, digest, commit, nil
+}
+
+// ResolveCommit turns a git ref into a commit id. A content pin is returned
+// unchanged. Anything else that does not resolve is an error, not a label.
+func ResolveCommit(dir, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", errors.New("empty commit ref")
+	}
+	if strings.HasPrefix(ref, "content:") {
+		return ref, nil
+	}
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}").Output()
+	if err != nil {
+		return "", fmt.Errorf("commit ref %q did not resolve", ref)
+	}
+	sha := strings.TrimSpace(string(out))
+	if len(sha) != 40 {
+		return "", fmt.Errorf("commit ref %q resolved to %q", ref, sha)
+	}
+	return sha, nil
+}
+
+func writeManifest(dir string) error {
+	entries, err := Inventory(dir, Limits{})
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{"files": entries})
+	if err != nil {
+		return err
+	}
+	// The manifest sits beside the snapshot so it is not part of the agent tree.
+	return os.WriteFile(dir+".manifest.json", body, 0o644)
 }
 
 // ContentDigest is the stable tree digest used as an execution snapshot.

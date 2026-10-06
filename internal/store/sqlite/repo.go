@@ -369,6 +369,13 @@ func (s *Store) CreateAttempt(ctx context.Context, trialID, accountID, runtimeJS
 		if state != string(domain.ExecQueued) && reason == "" {
 			return ErrConflict
 		}
+		var storedReason string
+		if err := tx.QueryRowContext(ctx, `SELECT retry_reason FROM trials WHERE id=?`, trialID).Scan(&storedReason); err != nil {
+			return err
+		}
+		if reason == "" {
+			reason = storedReason
+		}
 		var globalN, accountN, accountCap int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM attempts WHERE cleanup_state != ?`, string(domain.CleanupClean)).Scan(&globalN); err != nil {
 			return err
@@ -416,7 +423,14 @@ func (s *Store) CreateAttempt(ctx context.Context, trialID, accountID, runtimeJS
 		if n != 1 {
 			return ErrConflict
 		}
-		return nil
+		if _, err := tx.ExecContext(ctx, `UPDATE trials SET retry_reason='' WHERE id=?`, trialID); err != nil {
+			return err
+		}
+		var experimentID string
+		if err := tx.QueryRowContext(ctx, `SELECT experiment_id FROM trials WHERE id=?`, trialID).Scan(&experimentID); err != nil {
+			return err
+		}
+		return rollupExperiment(ctx, tx, experimentID)
 	})
 	return a, err
 }

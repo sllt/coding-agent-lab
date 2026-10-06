@@ -115,6 +115,9 @@ func (s *Store) WithTx(ctx context.Context, fn func(*sql.Tx) error) error {
 // ErrConflict is returned when a compare-and-swap misses.
 var ErrConflict = errors.New("cas conflict")
 
+// ErrAdminExists is returned when a second administrator setup is attempted.
+var ErrAdminExists = errors.New("admin exists")
+
 // CASUpdate updates one row when row_version still matches and increments it.
 func CASUpdate(ctx context.Context, tx *sql.Tx, query string, args ...any) error {
 	res, err := tx.ExecContext(ctx, query, args...)
