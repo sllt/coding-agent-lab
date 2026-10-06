@@ -1,6 +1,6 @@
 # Coding Agent Lab
 
-面向个人开发者的自托管 Coding Agent 实验与验收工作台。控制面使用 Go 与 [sllt/pi](https://github.com/sllt/pi)（锁定查阅提交 `4c292d04b898d95862ea74e17be7adb115a4ad54`），执行器是同一个可执行文件里的 `runner` 子命令。元数据在本地 SQLite，制品在本地目录。
+面向个人开发者的自托管 Coding Agent 实验与验收工作台。控制面使用 Go 与 [sllt/pi](https://github.com/sllt/pi)（锁定查阅提交 `4c292d04b898d95862ea74e17be7adb115a4ad54`），执行器是同一个可执行文件里的 `runner` 子命令。控制面每次运行都会拉起独立的 `agentlab runner` 进程，这个进程不打开控制数据库。元数据在本地 SQLite，制品在本地目录。
 
 产品说明见 `docs/01-产品需求文档.md`，技术边界见 `docs/02-技术设计文档.md`，工单见 `docs/03-实施任务包.md`。
 
