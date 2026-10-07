@@ -1,0 +1,43 @@
+name: replace main with local history
+on:
+  push:
+    branches:
+      - cursor/replace-main-7026
+permissions:
+  contents: write
+jobs:
+  replace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cursor/replace-main-7026
+          fetch-depth: 1
+      - name: Replace main with local history
+        env:
+          EXPECTED: 530adeacd524de2209e05b8fd1edddde2920be3c
+          MIRROR_ROOT: f79564a1de2927dedf807da5be6baa60e0695dda
+        run: |
+          set -euo pipefail
+          cat bundle-parts/part-*.b64 | base64 -d > /tmp/local-main.bundle
+          rm -rf /tmp/local-hist
+          git clone /tmp/local-main.bundle /tmp/local-hist
+          cd /tmp/local-hist
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git remote add gh https://github.com/sllt/coding-agent-lab.git
+          git config http.extraheader "AUTHORIZATION: bearer ${GITHUB_TOKEN}"
+          TIP=$(git ls-remote gh refs/heads/main | awk '{print $1}')
+          echo "remote tip ${TIP}"
+          git fetch --no-tags gh "${TIP}"
+          if ! git cat-file -e "${MIRROR_ROOT}^{commit}"; then
+            git fetch --no-tags gh "${MIRROR_ROOT}"
+          fi
+          if ! git merge-base --is-ancestor "$MIRROR_ROOT" "$TIP"; then
+            echo "tip is not a descendant of the upload mirror; refusing"
+            exit 1
+          fi
+          git push gh "${EXPECTED}:refs/heads/main" --force-with-lease="refs/heads/main:${TIP}"
+          AFTER=$(git ls-remote gh refs/heads/main | awk '{print $1}')
+          echo "after ${AFTER}"
+          test "$AFTER" = "$EXPECTED"
+          git push gh --delete cursor/replace-main-7026 || true
