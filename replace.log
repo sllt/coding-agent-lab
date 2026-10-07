@@ -1,0 +1,35 @@
+token_len 377
+Cloning into '/tmp/local-hist'...
+Note: switching to '530adeacd524de2209e05b8fd1edddde2920be3c'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+bundle head 530adeacd524de2209e05b8fd1edddde2920be3c
+remote tip 306b4d4f227ab376bbb1be5f36313f5d9b18c8cc
+From https://github.com/sllt/coding-agent-lab
+ * branch            306b4d4f227ab376bbb1be5f36313f5d9b18c8cc -> FETCH_HEAD
+ancestor ok
+remote: 
+remote: Create a pull request for 'cursor/local-history-7026' on GitHub by visiting:        
+remote:      https://github.com/sllt/coding-agent-lab/pull/new/cursor/local-history-7026        
+remote: 
+To https://github.com/sllt/coding-agent-lab.git
+ * [new branch]      530adeacd524de2209e05b8fd1edddde2920be3c -> cursor/local-history-7026
+branch push 0
+To https://github.com/sllt/coding-agent-lab.git
+ + 306b4d4...530adea 530adeacd524de2209e05b8fd1edddde2920be3c -> main (forced update)
+main push 0
+after 530adeacd524de2209e05b8fd1edddde2920be3c
