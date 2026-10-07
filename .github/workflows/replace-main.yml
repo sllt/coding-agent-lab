@@ -59,14 +59,19 @@ jobs:
             echo "after ${AFTER}"
             fi
             fi
+            set +e
           } > /tmp/replace.log 2>&1 || true
-          sed "s/${GITHUB_TOKEN}/[redacted]/g" /tmp/replace.log > "$GITHUB_WORKSPACE/replace.log"
-          cat "$GITHUB_WORKSPACE/replace.log" >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          sed "s#${GITHUB_TOKEN}#[redacted]#g" /tmp/replace.log > "$GITHUB_WORKSPACE/replace.log" || cp /tmp/replace.log "$GITHUB_WORKSPACE/replace.log"
+          cat "$GITHUB_WORKSPACE/replace.log" >> "$GITHUB_STEP_SUMMARY" || true
+          while IFS= read -r line; do
+            echo "::error::${line}"
+          done < "$GITHUB_WORKSPACE/replace.log"
           if ! grep -q "after ${EXPECTED}" "$GITHUB_WORKSPACE/replace.log"; then
             git config user.email "cursoragent@cursor.com"
             git config user.name "Cursor Agent"
             git add replace.log
-            git commit -m "Record replace attempt"
-            git push origin HEAD:cursor/replace-main-7026
+            git commit -m "Record replace attempt" || true
+            git push origin HEAD:cursor/replace-main-7026 || true
             exit 1
           fi
