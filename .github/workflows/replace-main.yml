@@ -21,62 +21,52 @@ jobs:
           MIRROR_ROOT: f79564a1de2927dedf807da5be6baa60e0695dda
         run: |
           set -uo pipefail
-          log=/tmp/replace.log
-          exec > >(tee "$log") 2>&1
-          cat bundle-parts/part-*.b64 | base64 -d > /tmp/local-main.bundle
-          rm -rf /tmp/local-hist
-          git clone /tmp/local-main.bundle /tmp/local-hist
-          cd /tmp/local-hist
-          test "$(git rev-parse HEAD)" = "$EXPECTED"
-          git remote add gh https://github.com/sllt/coding-agent-lab.git
-          hdr="AUTHORIZATION: bearer ${GITHUB_TOKEN}"
-          TIP=$(git -c http.extraheader="$hdr" ls-remote gh refs/heads/main | awk '{print $1}')
-          echo "remote tip ${TIP}"
-          git -c http.extraheader="$hdr" fetch --no-tags gh "${TIP}"
-          git cat-file -e "${MIRROR_ROOT}^{commit}" || git -c http.extraheader="$hdr" fetch --no-tags gh "${MIRROR_ROOT}"
-          if ! git merge-base --is-ancestor "$MIRROR_ROOT" "$TIP"; then
-            echo "tip is not a descendant of the upload mirror; refusing"
-            exit 1
-          fi
-          git -c http.extraheader="$hdr" push gh "${EXPECTED}:refs/heads/cursor/local-history-7026"
-          set +e
-          git -c http.extraheader="$hdr" push gh "${EXPECTED}:refs/heads/main" --force-with-lease="refs/heads/main:${TIP}"
-          push_code=$?
-          set -e
-          echo "git push exit ${push_code}"
-          if [ "$push_code" != 0 ]; then
-            curl -sS -X PATCH \
-              -H "Authorization: bearer ${GITHUB_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/sllt/coding-agent-lab/git/refs/heads/main \
-              -d "{\"sha\":\"${EXPECTED}\",\"force\":true}" > /tmp/patch.json
-            echo "patch response follows"
-            python3 - << 'PY'
-import re
-text=open('/tmp/patch.json',errors='replace').read()
-text=re.sub(r'(ghs_|ghp_|github_pat_)[A-Za-z0-9_]+','[redacted]',text)
-print(text[:2000])
-PY
-          fi
-          AFTER=$(git -c http.extraheader="$hdr" ls-remote gh refs/heads/main | awk '{print $1}')
-          echo "after ${AFTER}"
-          if [ "$AFTER" != "$EXPECTED" ]; then
-            python3 - << 'PY'
-import json, os, re, urllib.request
-body=open('/tmp/replace.log', errors='replace').read()[-5000:]
-body=re.sub(r'(bearer\s+)\S+', r'\1[redacted]', body, flags=re.I)
-body=re.sub(r'(ghs_|ghp_|github_pat_)[A-Za-z0-9_]+', '[redacted]', body)
-payload=json.dumps({"title":"replace-main log","body":"```\n"+body+"\n```"}).encode()
-req=urllib.request.Request(
-    'https://api.github.com/repos/sllt/coding-agent-lab/issues',
-    data=payload,
-    headers={
-        'Authorization': 'bearer '+os.environ['GITHUB_TOKEN'],
-        'Accept': 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-    },
-)
-print(urllib.request.urlopen(req).read().decode()[:300])
-PY
+          {
+            echo "start"
+            cat bundle-parts/part-*.b64 | base64 -d > /tmp/local-main.bundle
+            rm -rf /tmp/local-hist
+            git clone /tmp/local-main.bundle /tmp/local-hist
+            got=$(git -C /tmp/local-hist rev-parse HEAD)
+            echo "bundle head ${got}"
+            if [ "${got}" != "${EXPECTED}" ]; then
+              echo "bundle head mismatch"
+            else
+            remote="https://x-access-token:${GITHUB_TOKEN}@github.com/sllt/coding-agent-lab.git"
+            TIP=$(git -C /tmp/local-hist ls-remote "${remote}" refs/heads/main | awk '{print $1}')
+            echo "remote tip ${TIP}"
+            git -C /tmp/local-hist fetch --no-tags "${remote}" "${TIP}"
+            git -C /tmp/local-hist cat-file -e "${MIRROR_ROOT}^{commit}" || git -C /tmp/local-hist fetch --no-tags "${remote}" "${MIRROR_ROOT}"
+            if ! git -C /tmp/local-hist merge-base --is-ancestor "${MIRROR_ROOT}" "${TIP}"; then
+              echo "tip is not a descendant of the upload mirror; refusing"
+            else
+            git -C /tmp/local-hist push "${remote}" "${EXPECTED}:refs/heads/cursor/local-history-7026"
+            set +e
+            git -C /tmp/local-hist push "${remote}" "${EXPECTED}:refs/heads/main" --force-with-lease="refs/heads/main:${TIP}"
+            push_code=$?
+            set -e
+            echo "git push exit ${push_code}"
+            if [ "${push_code}" != 0 ]; then
+              curl -sS -o /tmp/patch.json -w "patch_http %{http_code}\n" -X PATCH \
+                -H "Authorization: bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/sllt/coding-agent-lab/git/refs/heads/main \
+                -d "{\"sha\":\"${EXPECTED}\",\"force\":true}"
+              echo "patch body"
+              cut -c1-800 /tmp/patch.json
+              echo
+            fi
+            AFTER=$(git -C /tmp/local-hist ls-remote "${remote}" refs/heads/main | awk '{print $1}')
+            echo "after ${AFTER}"
+            fi
+            fi
+          } > /tmp/replace.log 2>&1 || true
+          sed "s/${GITHUB_TOKEN}/[redacted]/g" /tmp/replace.log > "$GITHUB_WORKSPACE/replace.log"
+          cat "$GITHUB_WORKSPACE/replace.log" >> "$GITHUB_STEP_SUMMARY"
+          if ! grep -q "after ${EXPECTED}" "$GITHUB_WORKSPACE/replace.log"; then
+            git config user.email "cursoragent@cursor.com"
+            git config user.name "Cursor Agent"
+            git add replace.log
+            git commit -m "Record replace attempt"
+            git push origin HEAD:cursor/replace-main-7026
             exit 1
           fi
