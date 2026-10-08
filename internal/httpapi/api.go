@@ -7,16 +7,20 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,11 +30,12 @@ import (
 	"github.com/sllt/agentlab/internal/app"
 	"github.com/sllt/agentlab/internal/bootstrap"
 	"github.com/sllt/agentlab/internal/compare"
-	"github.com/sllt/agentlab/internal/doctor"
 	"github.com/sllt/agentlab/internal/domain"
 	"github.com/sllt/agentlab/internal/harbor"
+	"github.com/sllt/agentlab/internal/sandbox"
 	"github.com/sllt/agentlab/internal/stats"
 	"github.com/sllt/agentlab/internal/store/sqlite"
+	"github.com/sllt/agentlab/internal/webui"
 )
 
 type userKey struct{}
@@ -41,11 +46,20 @@ type csrfKey struct{}
 type webhookBodyKey struct{}
 type webhookSigKey struct{}
 type webhookDedupeKey struct{}
+type webhookTSKey struct{}
+
+// respHeaderKey carries the live response header map so a handler can set a
+// header (for example Retry-After) alongside an error envelope.
+type respHeaderKey struct{}
 type rawBodyKey struct{}
 
 type API struct {
 	svc     *app.Service
 	streams atomic.Int32
+
+	webOnce   sync.Once
+	web       fs.FS
+	webSource string
 }
 
 var maxEventStreams int32 = 32
@@ -94,6 +108,7 @@ func (a *API) Register(appPi *pi.App) {
 	appPi.GET("/api/v1/attempts/{id}/reviews", a.listReviews)
 	appPi.GET("/api/v1/artifacts/{id}/download", a.download)
 	appPi.GET("/api/v1/comparisons", a.comparisons)
+	appPi.GET("/api/v1/catalog", a.catalog)
 	appPi.GET("/api/v1/settings", a.settings)
 	appPi.PATCH("/api/v1/settings", a.patchSettings)
 	appPi.GET("/api/v1/audit", a.listAudit)
@@ -123,10 +138,12 @@ func (a *API) Wrap(next http.Handler) http.Handler {
 			a.serveStatic(w, r)
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), respHeaderKey{}, w.Header()))
 		if r.URL.Path == "/api/v1/webhooks" && r.Method == http.MethodPost {
 			ctx := context.WithValue(r.Context(), webhookBodyKey{}, raw)
 			ctx = context.WithValue(ctx, webhookSigKey{}, r.Header.Get("X-Agentlab-Signature"))
 			ctx = context.WithValue(ctx, webhookDedupeKey{}, r.Header.Get("X-Agentlab-Dedupe"))
+			ctx = context.WithValue(ctx, webhookTSKey{}, r.Header.Get("X-Agentlab-Timestamp"))
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -144,7 +161,7 @@ func (a *API) Wrap(next http.Handler) http.Handler {
 			writeHTTP(w, r, http.StatusUnauthorized, "unauthenticated", "需要登录")
 			return
 		}
-		if mutating(r.Method) && r.Header.Get("X-CSRF-Token") != csrf {
+		if mutating(r.Method) && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(csrf)) != 1 {
 			writeHTTP(w, r, http.StatusForbidden, "csrf", "缺少或错误的 CSRF 令牌")
 			return
 		}
@@ -225,8 +242,15 @@ func (a *API) fromErr(c *pi.Context, err error) (any, error) {
 		return fail(c, 422, "unexecutable", "配置不能执行")
 	case errors.Is(err, app.ErrMaintenance):
 		return fail(c, http.StatusServiceUnavailable, "maintenance", "维护模式中，不接受新实验")
+	case errors.Is(err, app.ErrBusy):
+		return fail(c, http.StatusConflict, "busy", "另一个维护操作正在进行")
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return fail(c, http.StatusServiceUnavailable, "unavailable", "请求被取消或超时")
 	default:
-		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
+		// An error we did not classify is a server fault, not the client's.
+		// The detail goes to the log with the request id, never to the client.
+		log.Printf("agentlab: request %s: unclassified error: %v", bootstrap.RequestID(c), err)
+		return fail(c, http.StatusInternalServerError, "internal", "服务内部错误，详情见服务日志")
 	}
 }
 
@@ -253,8 +277,22 @@ func (a *API) login(c *pi.Context) (any, error) {
 		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
 	}
 	token, csrf, err := a.svc.Login(c, body.Username, body.Password)
-	if err != nil {
+	var locked app.ErrLocked
+	if errors.As(err, &locked) {
+		secs := int(locked.RetryAfter.Seconds()) + 1
+		if h, ok := c.Value(respHeaderKey{}).(http.Header); ok {
+			h.Set("Retry-After", strconv.Itoa(secs))
+		}
+		return response.Raw{StatusCode: http.StatusTooManyRequests, Data: map[string]any{
+			"error":      map[string]any{"code": "locked", "message": "登录失败次数过多，请稍后再试", "retry_after_seconds": secs},
+			"request_id": bootstrap.RequestID(c),
+		}}, nil
+	}
+	if errors.Is(err, sqlite.ErrNotFound) {
 		return fail(c, http.StatusUnauthorized, "unauthenticated", "用户名或密码不正确")
+	}
+	if err != nil {
+		return a.fromErr(c, err)
 	}
 	payload := map[string]any{"data": map[string]string{"username": body.Username, "csrf_token": csrf}, "request_id": bootstrap.RequestID(c)}
 	return response.Result{
@@ -283,31 +321,32 @@ func (a *API) session(c *pi.Context) (any, error) {
 }
 
 func (a *API) overview(c *pi.Context) (any, error) {
-	trials, err := a.svc.Store.ListTrials(c, "")
+	counts, err := a.svc.Store.TrialStateCounts(c)
 	if err != nil {
 		return a.fromErr(c, err)
+	}
+	recent, err := a.svc.Store.RecentTrials(c, 20)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	if recent == nil {
+		recent = []sqlite.Trial{}
 	}
 	accounts, err := a.svc.Store.ListAccounts(c)
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	var running, queued, blocked int
-	for _, trial := range trials {
-		switch trial.ExecutionState {
-		case string(domain.ExecRunning), string(domain.ExecPreparing), string(domain.ExecCollecting), string(domain.ExecVerifying), string(domain.ExecCancelling):
-			running++
-		case string(domain.ExecQueued):
-			queued++
-		}
-	}
+	running := counts[string(domain.ExecRunning)] + counts[string(domain.ExecPreparing)] + counts[string(domain.ExecCollecting)] + counts[string(domain.ExecVerifying)] + counts[string(domain.ExecCancelling)]
+	queued := counts[string(domain.ExecQueued)]
+	blocked := 0
 	for _, account := range accounts {
 		if account.BlockedReason != "" {
 			blocked++
 		}
 	}
 	return ok(c, http.StatusOK, map[string]any{
-		"running": running, "queued": queued, "blocked_accounts": blocked,
-		"recent": trials, "note": "没有真实运行时这里保持空白，不会填入演示分数。",
+		"running": running, "queued": queued, "blocked_accounts": blocked, "state_counts": counts,
+		"recent": recent, "note": "没有真实运行时这里保持空白，不会填入演示分数。",
 	})
 }
 
@@ -413,14 +452,31 @@ func (a *API) listTasks(c *pi.Context) (any, error) {
 
 func (a *API) patchTask(c *pi.Context) (any, error) {
 	var body struct {
-		Name       string `json:"name"`
-		Draft      string `json:"draft_json"`
-		RowVersion int64  `json:"row_version"`
+		Name       string          `json:"name"`
+		Draft      json.RawMessage `json:"draft"`
+		DraftJSON  string          `json:"draft_json"`
+		RowVersion int64           `json:"row_version"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
 	}
-	task, err := a.svc.Store.UpdateTaskDraft(c, c.PathParam("id"), body.RowVersion, body.Name, body.Draft)
+	draft := body.DraftJSON
+	if len(body.Draft) > 0 && string(body.Draft) != "null" {
+		// The nested form is what GET returns; validate it like createTask.
+		var snap app.TaskSnapshot
+		if err := domain.UnmarshalStrict(body.Draft, &snap); err != nil {
+			return fail(c, 422, "unexecutable", "草稿含未知字段或重复键")
+		}
+		canon, err := json.Marshal(snap)
+		if err != nil {
+			return a.fromErr(c, err)
+		}
+		draft = string(canon)
+		if body.Name == "" {
+			body.Name = snap.Name
+		}
+	}
+	task, err := a.svc.Store.UpdateTaskDraft(c, c.PathParam("id"), body.RowVersion, body.Name, draft)
 	if err != nil {
 		return a.fromErr(c, err)
 	}
@@ -502,7 +558,19 @@ func (a *API) listProfiles(c *pi.Context) (any, error) {
 	if items == nil {
 		items = []sqlite.Profile{}
 	}
-	return ok(c, http.StatusOK, map[string]any{"items": items})
+	versions, err := a.svc.Store.CatalogProfiles(c)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	// Newest published version per profile (CatalogProfiles orders versions
+	// newest first within a profile).
+	latest := map[string]sqlite.ProfileVersionInfo{}
+	for _, v := range versions {
+		if _, seen := latest[v.ProfileID]; !seen {
+			latest[v.ProfileID] = v
+		}
+	}
+	return ok(c, http.StatusOK, map[string]any{"items": items, "latest": latest})
 }
 
 func (a *API) doctor(c *pi.Context) (any, error) {
@@ -516,9 +584,9 @@ func (a *API) doctor(c *pi.Context) (any, error) {
 	}
 	var snap app.ProfileSnapshot
 	_ = json.Unmarshal([]byte(profile.DraftJSON), &snap)
-	report := doctor.Static(c, snap.Adapter, snap.Executable, snap.Model, body.AllowModelCall)
-	if snap.Adapter == "cursor" && !snap.ApproveTools {
-		report.Note = strings.TrimSpace(report.Note + " 未批准 --force，Cursor 不能写文件。")
+	report := a.svc.ProfileDoctor(c, snap, body.AllowModelCall)
+	if body.AllowModelCall {
+		a.audit(c, "doctor_model_call", profile.ID)
 	}
 	return ok(c, http.StatusOK, report)
 }
@@ -553,8 +621,13 @@ func (a *API) createEnvironment(c *pi.Context) (any, error) {
 	if err := c.Bind(&body); err != nil || body.Name == "" {
 		return fail(c, http.StatusBadRequest, "bad_request", "请求无法处理")
 	}
-	if body.Network == "" || body.Network == "restricted" {
+	if body.Network == "" {
 		body.Network = "unrestricted"
+	}
+	if body.Network != "unrestricted" {
+		// restricted/offline are not enforced by the native executor. Saving
+		// them as unrestricted would silently claim an isolation we do not have.
+		return fail(c, 422, "unexecutable", "network="+body.Network+" 尚未强制执行，不能保存。只能选择 unrestricted。")
 	}
 	raw, _ := json.Marshal(body)
 	digest, err := domain.Digest(body)
@@ -576,7 +649,7 @@ func (a *API) listEnvironments(c *pi.Context) (any, error) {
 	if items == nil {
 		items = []sqlite.Environment{}
 	}
-	return ok(c, http.StatusOK, map[string]any{"items": items, "note": "network=restricted 尚未强制执行，保存时会记为 unrestricted。"})
+	return ok(c, http.StatusOK, map[string]any{"items": items, "note": "network=restricted/offline 尚未强制执行，保存时会被拒绝（422）。"})
 }
 
 func (a *API) previewExperiment(c *pi.Context) (any, error) {
@@ -607,11 +680,12 @@ func (a *API) createExperiment(c *pi.Context) (any, error) {
 	exp, err := a.svc.SubmitExperiment(c, app.ExperimentRequest{
 		Actor: "local", IdempotencyKey: key, Mode: body.Mode, TaskVersionIDs: body.TaskVersionIDs,
 		ProfileVersionIDs: body.ProfileVersionIDs, Repetitions: body.Repetitions, Protocol: body.Protocol,
+		Name: body.Name, Description: body.Description,
 	})
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	return ok(c, http.StatusAccepted, map[string]any{"id": exp.ID, "state": exp.State, "trial_count": exp.TrialCount, "protocol": exp.ProtocolJSON})
+	return ok(c, http.StatusAccepted, map[string]any{"id": exp.ID, "name": exp.Name, "state": exp.State, "trial_count": exp.TrialCount, "protocol": exp.ProtocolJSON})
 }
 
 func (a *API) listExperiments(c *pi.Context) (any, error) {
@@ -622,9 +696,8 @@ func (a *API) listExperiments(c *pi.Context) (any, error) {
 	if items == nil {
 		items = []sqlite.Experiment{}
 	}
-	for i := range items {
-		items[i] = a.projectState(c, items[i])
-	}
+	// The stored state is rolled up in the same transaction as every trial
+	// transition (and repaired at start-up), so the list is two queries.
 	return ok(c, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -637,39 +710,89 @@ func (a *API) getExperiment(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
-	exp = a.projectState(c, exp)
+	attempts, err := a.svc.Store.ExperimentAttempts(c, exp.ID)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	if len(trials) > 0 {
+		// Read-only projection from rows already loaded; a GET never writes.
+		states := make([]domain.ExecutionState, len(trials))
+		for i, trial := range trials {
+			states[i] = domain.ExecutionState(trial.ExecutionState)
+		}
+		exp.State = string(domain.RollupExecution(states))
+	}
 	exports := a.exportViews(c, exp.ID)
-	return ok(c, http.StatusOK, map[string]any{"experiment": exp, "trials": a.withCleanup(c, trials), "summary": a.summarizeFirst(c, trials), "exports": exports})
+	labels, err := a.experimentLabels(c, trials)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	return ok(c, http.StatusOK, map[string]any{"experiment": exp, "trials": withCleanup(trials, attempts), "summary": summarizeFirst(trials, attempts), "exports": exports, "labels": labels})
 }
 
-func (a *API) projectState(c *pi.Context, exp sqlite.Experiment) sqlite.Experiment {
-	trials, err := a.svc.Store.ListTrials(c, exp.ID)
-	if err != nil || len(trials) == 0 {
-		return exp
+// experimentLabels names the task and profile versions used by the trials so
+// the UI can draw a task × profile matrix without extra round trips.
+func (a *API) experimentLabels(c *pi.Context, trials []sqlite.Trial) (map[string]any, error) {
+	tasks, err := a.svc.Store.CatalogTasks(c)
+	if err != nil {
+		return nil, err
 	}
-	states := make([]domain.ExecutionState, len(trials))
-	for i, trial := range trials {
-		states[i] = domain.ExecutionState(trial.ExecutionState)
+	profiles, err := a.svc.Store.CatalogProfiles(c)
+	if err != nil {
+		return nil, err
 	}
-	next := string(domain.RollupExecution(states))
-	if exp.State != next {
-		_ = a.svc.Store.SetExperimentState(c, exp.ID, next)
-		exp.State = next
+	used := map[string]bool{}
+	for _, t := range trials {
+		used[t.TaskVersionID] = true
+		used[t.ProfileVersionID] = true
 	}
-	return exp
+	tl := map[string]sqlite.TaskVersionInfo{}
+	for _, t := range tasks {
+		if used[t.VersionID] {
+			tl[t.VersionID] = t
+		}
+	}
+	pl := map[string]sqlite.ProfileVersionInfo{}
+	for _, p := range profiles {
+		if used[p.VersionID] {
+			pl[p.VersionID] = p
+		}
+	}
+	return map[string]any{"tasks": tl, "profiles": pl}, nil
+}
+
+// catalog lists every published task and profile version for pickers.
+func (a *API) catalog(c *pi.Context) (any, error) {
+	tasks, err := a.svc.Store.CatalogTasks(c)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	profiles, err := a.svc.Store.CatalogProfiles(c)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	return ok(c, http.StatusOK, map[string]any{"tasks": tasks, "profiles": profiles})
 }
 
 type trialView struct {
 	sqlite.Trial
-	CleanupState string `json:"cleanup_state"`
+	CleanupState string
+	AttemptCount int
 }
 
-func (a *API) withCleanup(c *pi.Context, trials []sqlite.Trial) []trialView {
+func (v trialView) MarshalJSON() ([]byte, error) {
+	m := v.Trial.JSONMap()
+	m["cleanup_state"] = v.CleanupState
+	m["attempt_count"] = v.AttemptCount
+	return json.Marshal(m)
+}
+
+func withCleanup(trials []sqlite.Trial, attempts map[string][]sqlite.Attempt) []trialView {
 	out := make([]trialView, 0, len(trials))
 	for _, trial := range trials {
-		view := trialView{Trial: trial, CleanupState: "not_started"}
-		if trial.CurrentAttemptID != "" {
-			if attempt, err := a.svc.Store.GetAttempt(c, trial.CurrentAttemptID); err == nil && attempt.CleanupState != "" {
+		view := trialView{Trial: trial, CleanupState: "not_started", AttemptCount: len(attempts[trial.ID])}
+		for _, attempt := range attempts[trial.ID] {
+			if attempt.ID == trial.CurrentAttemptID && attempt.CleanupState != "" {
 				view.CleanupState = attempt.CleanupState
 			}
 		}
@@ -897,19 +1020,40 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 	var rows []compare.Input
 	var statRows []stats.Row
 	tasks := map[string]struct{}{}
-	var excluded []string
+	excluded := []string{}
+	byTrial := map[string][]sqlite.Attempt{}
+	ivn := map[string]int{}
+	var exp sqlite.Experiment
+	if expID != "" {
+		if exp, err = a.svc.Store.GetExperiment(c, expID); err != nil {
+			return a.fromErr(c, err)
+		}
+		if byTrial, err = a.svc.Store.ExperimentAttempts(c, expID); err != nil {
+			return a.fromErr(c, err)
+		}
+		if ivn, err = a.svc.Store.InterventionCounts(c, expID); err != nil {
+			return a.fromErr(c, err)
+		}
+	}
+	// Each version and flag is read once per request, not once per trial.
+	tvs := map[string]sqlite.TaskVersion{}
+	pvs := map[string]sqlite.ProfileVersion{}
+	flags := map[string]sqlite.TaskFlag{}
+	seenExcluded := map[string]bool{}
 	for _, trial := range trials {
-		exp, err := a.svc.Store.GetExperiment(c, trial.ExperimentID)
-		if err != nil {
-			return a.fromErr(c, err)
+		tv, okTV := tvs[trial.TaskVersionID]
+		if !okTV {
+			if tv, err = a.svc.Store.GetTaskVersion(c, trial.TaskVersionID); err != nil {
+				return a.fromErr(c, err)
+			}
+			tvs[trial.TaskVersionID] = tv
 		}
-		tv, err := a.svc.Store.GetTaskVersion(c, trial.TaskVersionID)
-		if err != nil {
-			return a.fromErr(c, err)
-		}
-		pv, err := a.svc.Store.GetProfileVersion(c, trial.ProfileVersionID)
-		if err != nil {
-			return a.fromErr(c, err)
+		pv, okPV := pvs[trial.ProfileVersionID]
+		if !okPV {
+			if pv, err = a.svc.Store.GetProfileVersion(c, trial.ProfileVersionID); err != nil {
+				return a.fromErr(c, err)
+			}
+			pvs[trial.ProfileVersionID] = pv
 		}
 		var snap app.ProfileSnapshot
 		_ = json.Unmarshal([]byte(pv.SnapshotJSON), &snap)
@@ -922,15 +1066,17 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 		var agentMs, e2e *int64
 		interventions := 0
 		modelMismatch := false
-		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil && len(attempts) > 0 {
+		budget := ""
+		if attempts := byTrial[trial.ID]; len(attempts) > 0 {
 			verdict = attempts[0].Verdict
 			terminal = domain.ExecutionState(attempts[0].State).Terminal()
 			attemptID = attempts[0].ID
 			var runtime struct {
-				Executor string `json:"executor"`
-				Network  string `json:"network"`
-				Mismatch bool   `json:"model_resolution_mismatch"`
-				Phases   *struct {
+				Executor     string `json:"executor"`
+				Network      string `json:"network"`
+				Mismatch     bool   `json:"model_resolution_mismatch"`
+				BudgetDigest string `json:"budget_digest"`
+				Phases       *struct {
 					Agent *int64 `json:"agent_ms"`
 					E2E   *int64 `json:"end_to_end_ms"`
 				} `json:"phases"`
@@ -947,9 +1093,8 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 				e2e = runtime.Phases.E2E
 			}
 			modelMismatch = runtime.Mismatch
-			if n, err := a.svc.Store.CountInterventions(c, attempts[0].ID); err == nil {
-				interventions += n
-			}
+			budget = runtime.BudgetDigest
+			interventions += ivn[attempts[0].ID]
 			if len(attempts) > 1 {
 				interventions++
 				if domain.ExecutionState(attempts[len(attempts)-1].State).Terminal() {
@@ -962,12 +1107,18 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 				}
 			}
 		}
-		flag, err := a.svc.Store.GetTaskFlag(c, trial.TaskVersionID)
-		if err != nil {
-			return a.fromErr(c, err)
+		flag, okFlag := flags[trial.TaskVersionID]
+		if !okFlag {
+			if flag, err = a.svc.Store.GetTaskFlag(c, trial.TaskVersionID); err != nil {
+				return a.fromErr(c, err)
+			}
+			flags[trial.TaskVersionID] = flag
 		}
 		if flag.Flaky {
-			excluded = append(excluded, trial.TaskVersionID)
+			if !seenExcluded[trial.TaskVersionID] {
+				seenExcluded[trial.TaskVersionID] = true
+				excluded = append(excluded, trial.TaskVersionID)
+			}
 			continue
 		}
 		tasks[trial.TaskVersionID] = struct{}{}
@@ -997,7 +1148,7 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 			ProfileID: trial.ProfileVersionID, ProfileName: snap.DisplayName, ProfileDig: profileDig,
 			Executor: executor, Network: network, Verdict: verdict, Terminal: terminal, Assisted: assisted,
 			Repair: repair, TrialID: trial.ID, AttemptID: attemptID, AgentMillis: agentMs, EndToEndMillis: e2e,
-			Interventions: interventions, ModelMismatch: modelMismatch,
+			Interventions: interventions, ModelMismatch: modelMismatch, BudgetDigest: budget,
 		})
 	}
 	boards, err := compare.Boards(rows, len(tasks))
@@ -1007,9 +1158,6 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 	if boards == nil {
 		boards = []compare.Board{}
 	}
-	if excluded == nil {
-		excluded = []string{}
-	}
 	return ok(c, http.StatusOK, map[string]any{
 		"boards": boards, "statistics": stats.Aggregate(statRows, 20261004, 200), "excluded_flaky": excluded,
 	})
@@ -1018,25 +1166,31 @@ func (a *API) comparisons(c *pi.Context) (any, error) {
 func (a *API) settings(c *pi.Context) (any, error) {
 	_, err := os.Stat(filepath.Join(a.svc.DataDir, "webhook.secret"))
 	return ok(c, http.StatusOK, map[string]any{
-		"executor_default":   "native-trusted",
-		"executor_note":      "只有明确选择 native-trusted 且网络为 unrestricted 的配置可以发布。Docker、offline 和 restricted 会被拒绝，不会改成本机执行。",
-		"network_restricted": "未实现",
-		"maintenance":        a.svc.Maintenance(),
-		"store_error":        a.svc.FatalError(),
-		"webhook_configured": err == nil,
-		"credential_display": "只显示引用，不回传密钥",
-		"global_limit":       a.svc.LoadSettings().GlobalLimit,
-		"retention":          a.svc.LoadSettings().Retention,
-		"disk_quota_bytes":   a.svc.LoadSettings().DiskQuotaBytes,
-		"release_rss":        "未测",
-		"process_rss_bytes":  processRSS(),
-		"process_rss_note":   "这是当前进程的 VmRSS，不是发布容量目标。",
+		"executor_default":    "native-trusted",
+		"executor_note":       "只有明确选择 native-trusted 且网络为 unrestricted 的配置可以发布。Docker、offline 和 restricted 会被拒绝，不会改成本机执行。",
+		"network_restricted":  "未实现",
+		"maintenance":         a.svc.Maintenance(),
+		"store_error":         redactPaths(a.svc.DataDir, a.svc.FatalError()),
+		"maintenance_reasons": a.svc.MaintenanceReasons(),
+		"webhook_configured":  err == nil,
+		"credential_display":  "只显示引用，不回传密钥",
+		"global_limit":        a.svc.LoadSettings().GlobalLimit,
+		"agent_wall_seconds":  a.svc.LoadSettings().AgentWallSeconds,
+		"sandbox":             sandboxStatus(),
+		"retention":           a.svc.LoadSettings().Retention,
+		"disk_quota_bytes":    a.svc.LoadSettings().DiskQuotaBytes,
+		"release_rss":         "未测",
+		"process_rss_bytes":   processRSS(),
+		"process_rss_note":    "这是当前进程的 VmRSS，不是发布容量目标。",
 	})
 }
 
 func (a *API) backup(c *pi.Context) (any, error) {
-	a.svc.SetMaintenance(true)
-	defer a.svc.SetMaintenance(false)
+	release, err := a.svc.BeginBackup()
+	if err != nil {
+		return fail(c, http.StatusConflict, "busy", "已有备份正在进行")
+	}
+	defer release()
 	deadline := time.Now().Add(backupWait)
 	for {
 		n, err := a.svc.Store.CountInFlight(c)
@@ -1065,8 +1219,8 @@ func (a *API) backup(c *pi.Context) (any, error) {
 	if err := a.svc.Store.Backup(c, dest); err != nil {
 		return fail(c, http.StatusServiceUnavailable, "backup_failed", "无法生成一致性备份")
 	}
-	a.audit(c, "backup", dest)
-	return ok(c, http.StatusOK, map[string]any{"path": dest, "note": "备份在活跃 Attempt 都结束后生成。没有把仍在运行的任务记成已清理。"})
+	a.audit(c, "backup", dataRel(a.svc.DataDir, dest))
+	return ok(c, http.StatusOK, map[string]any{"path": dataRel(a.svc.DataDir, dest), "note": "备份在活跃 Attempt 都结束后生成。没有把仍在运行的任务记成已清理。"})
 }
 
 func (a *API) importHarbor(c *pi.Context) (any, error) {
@@ -1089,8 +1243,17 @@ func (a *API) webhook(c *pi.Context) (any, error) {
 	body, _ := c.Value(webhookBodyKey{}).([]byte)
 	sig, _ := c.Value(webhookSigKey{}).(string)
 	dedupe, _ := c.Value(webhookDedupeKey{}).(string)
-	if dedupe == "" || !VerifyWebhook(secret, body, sig) {
+	ts, _ := c.Value(webhookTSKey{}).(string)
+	if dedupe == "" || len(dedupe) > 200 || !VerifyWebhook(secret, ts, dedupe, body, sig) {
 		return fail(c, http.StatusUnauthorized, "unauthenticated", "webhook 签名不正确")
+	}
+	if !freshTimestamp(ts, time.Now()) {
+		return fail(c, http.StatusUnauthorized, "stale", "webhook 时间戳缺失或超出 5 分钟窗口")
+	}
+	if notify := loopbackNotify(body); notify != "local" {
+		if _, err := app.ValidateNotifyURL(notify); err != nil {
+			return fail(c, 422, "unexecutable", "notify_url 只能是带端口的 http 本机地址")
+		}
 	}
 	sum := sha256.Sum256(body)
 	dup, err := a.svc.Store.AcceptWebhook(c, dedupe, hex.EncodeToString(sum[:]))
@@ -1139,14 +1302,22 @@ func (a *API) exportExperiment(c *pi.Context) (any, error) {
 		Attempts   []map[string]any `json:"attempts"`
 		TaskDigest string           `json:"task_digest"`
 	}
-	var rows []row
+	byTrial, err := a.svc.Store.ExperimentAttempts(c, exp.ID)
+	if err != nil {
+		return a.fromErr(c, err)
+	}
+	digests := map[string]string{}
+	rows := []row{}
 	for _, trial := range trials {
-		item := row{TrialID: trial.ID, State: trial.ExecutionState, Verdict: trial.Verdict}
-		if tv, err := a.svc.Store.GetTaskVersion(c, trial.TaskVersionID); err == nil {
+		item := row{TrialID: trial.ID, State: trial.ExecutionState, Verdict: trial.Verdict, Attempts: []map[string]any{}}
+		if d, seen := digests[trial.TaskVersionID]; seen {
+			item.TaskDigest = d
+		} else if tv, err := a.svc.Store.GetTaskVersion(c, trial.TaskVersionID); err == nil {
 			item.TaskDigest = tv.Digest
+			digests[trial.TaskVersionID] = tv.Digest
 		}
-		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil {
-			for _, attempt := range attempts {
+		{
+			for _, attempt := range byTrial[trial.ID] {
 				usage, _ := a.svc.Store.ListUsage(c, attempt.ID)
 				arts, _ := a.svc.Store.ListArtifacts(c, attempt.ID)
 				refs := []map[string]any{}
@@ -1214,37 +1385,47 @@ func (a *API) underData(path string) bool {
 }
 
 func (a *API) serveStatic(w http.ResponseWriter, r *http.Request) {
-	root, err := filepath.Abs(filepath.Join("web", "dist"))
-	if err != nil {
-		http.NotFound(w, r)
+	a.webOnce.Do(func() { a.web, a.webSource = webui.FS() })
+	if a.web == nil {
+		http.Error(w, "web UI is not built: run `npm run build` in web/ or build with -tags webembed", http.StatusNotFound)
 		return
 	}
-	serveSPA(w, r, root)
+	serveSPAFS(w, r, a.web)
 }
 
+// serveSPA serves a directory; kept for tests and tools.
 func serveSPA(w http.ResponseWriter, r *http.Request, root string) {
 	if _, err := os.Stat(root); err != nil {
 		http.NotFound(w, r)
 		return
 	}
+	serveSPAFS(w, r, os.DirFS(root))
+}
+
+// serveSPAFS serves files from root and falls back to index.html for client
+// routes. fs.FS paths cannot climb out of the root.
+func serveSPAFS(w http.ResponseWriter, r *http.Request, root fs.FS) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.NotFound(w, r)
 		return
 	}
 	rel := strings.TrimPrefix(pathClean(r.URL.Path), "/")
-	target := root
-	if rel != "" {
-		target = filepath.Join(root, filepath.FromSlash(rel))
+	if rel != "" && fs.ValidPath(rel) {
+		if info, err := fs.Stat(root, rel); err == nil && !info.IsDir() {
+			if strings.HasPrefix(rel, "assets/") {
+				// Vite fingerprints asset names, so they never change.
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			http.ServeFileFS(w, r, root, rel)
+			return
+		}
+		if path.Ext(rel) != "" && strings.HasPrefix(rel, "assets/") {
+			http.NotFound(w, r)
+			return
+		}
 	}
-	if !insideDir(root, target) {
-		http.NotFound(w, r)
-		return
-	}
-	if info, err := os.Stat(target); err == nil && !info.IsDir() {
-		http.ServeFile(w, r, target)
-		return
-	}
-	http.ServeFile(w, r, filepath.Join(root, "index.html"))
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFileFS(w, r, root, "index.html")
 }
 
 func pathClean(p string) string {
@@ -1287,6 +1468,8 @@ func (a *API) webhookSecret() ([]byte, error) {
 }
 
 type experimentBody struct {
+	Name              string   `json:"name"`
+	Description       string   `json:"description"`
 	Mode              string   `json:"mode"`
 	TaskVersionIDs    []string `json:"task_version_ids"`
 	ProfileVersionIDs []string `json:"profile_version_ids"`
@@ -1298,12 +1481,12 @@ func formula(tasks, profiles, repetitions int) string {
 	return strconv.Itoa(tasks) + " 个任务 × " + strconv.Itoa(profiles) + " 个配置 × " + strconv.Itoa(repetitions) + " 次 = " + strconv.Itoa(domain.TrialCount(tasks, profiles, repetitions)) + " 个 Trial"
 }
 
-func (a *API) summarizeFirst(c *pi.Context, trials []sqlite.Trial) map[string]any {
+func summarizeFirst(trials []sqlite.Trial, byTrial map[string][]sqlite.Attempt) map[string]any {
 	var done, pass, fail, inc, unver, incomplete, assisted, repair int
 	for _, trial := range trials {
 		state := trial.ExecutionState
 		verdict := trial.Verdict
-		if attempts, err := a.svc.Store.ListAttempts(c, trial.ID); err == nil && len(attempts) > 0 {
+		if attempts := byTrial[trial.ID]; len(attempts) > 0 {
 			state = attempts[0].State
 			verdict = attempts[0].Verdict
 			if len(attempts) > 1 && attempts[len(attempts)-1].Verdict == string(domain.VerdictPass) {
@@ -1379,13 +1562,67 @@ func flushWriter(w io.Writer) {
 	}
 }
 
+// eventTail reads an NDJSON file incrementally. It remembers the byte offset
+// of the first unread byte and only ever returns complete lines; a trailing
+// fragment without a newline stays unread until the writer finishes it.
+type eventTail struct {
+	path   string
+	offset int64
+}
+
+func (t *eventTail) next() ([][]byte, error) {
+	f, err := os.Open(t.path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() < t.offset {
+		// Truncated or replaced: start over rather than seek past the end.
+		t.offset = 0
+	}
+	if info.Size() == t.offset {
+		return nil, nil
+	}
+	const maxChunk = 4 << 20
+	n := info.Size() - t.offset
+	if n > maxChunk {
+		n = maxChunk
+	}
+	buf := make([]byte, n)
+	read, err := f.ReadAt(buf, t.offset)
+	if err != nil && read == 0 {
+		return nil, err
+	}
+	buf = buf[:read]
+	end := bytes.LastIndexByte(buf, '\n')
+	if end < 0 {
+		if int64(read) == maxChunk {
+			// One line longer than the chunk: skip it instead of stalling.
+			t.offset += int64(read)
+		}
+		return nil, nil
+	}
+	t.offset += int64(end + 1)
+	return splitLines(buf[:end+1]), nil
+}
+
+func writeEvent(w io.Writer, attemptID string, line []byte) error {
+	seq := eventSeq(line)
+	_, err := io.WriteString(w, "id: "+attemptID+":"+strconv.FormatInt(seq, 10)+"\ndata: "+string(redactLine(line))+"\n\n")
+	return err
+}
+
 func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last int64, once bool) error {
-	body, err := os.ReadFile(path)
+	tail := &eventTail{path: path}
+	lines, err := tail.next()
 	if err != nil && last > 0 {
 		_, err = io.WriteString(w, "event: gap\ndata: {\"gap\":true,\"reason\":\"snapshot_required\"}\n\n")
 		return err
 	}
-	lines := splitLines(body)
 	var min int64
 	for _, line := range lines {
 		seq := eventSeq(line)
@@ -1401,11 +1638,10 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 		return err
 	}
 	for _, line := range lines {
-		seq := eventSeq(line)
-		if seq <= last {
+		if eventSeq(line) <= last {
 			continue
 		}
-		if _, err = io.WriteString(w, "id: "+attemptID+":"+strconv.FormatInt(seq, 10)+"\ndata: "+string(line)+"\n\n"); err != nil {
+		if err := writeEvent(w, attemptID, line); err != nil {
 			return err
 		}
 	}
@@ -1417,32 +1653,29 @@ func writeEvents(ctx context.Context, w io.Writer, attemptID, path string, last 
 	heart := time.NewTicker(heartbeatEvery)
 	defer ticker.Stop()
 	defer heart.Stop()
-	seen := len(lines)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-heart.C:
-			if _, err = io.WriteString(w, ": heartbeat\n\n"); err != nil {
+			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
 				return err
 			}
 			flushWriter(w)
 		case <-ticker.C:
-			body, err = os.ReadFile(path)
-			if err != nil {
+			lines, err := tail.next()
+			if err != nil || len(lines) == 0 {
 				continue
 			}
-			lines = splitLines(body)
-			for _, line := range lines[minInt(seen, len(lines)):] {
-				seq := eventSeq(line)
-				if _, err = io.WriteString(w, "id: "+attemptID+":"+strconv.FormatInt(seq, 10)+"\ndata: "+string(line)+"\n\n"); err != nil {
+			for _, line := range lines {
+				if eventSeq(line) <= last {
+					continue
+				}
+				if err := writeEvent(w, attemptID, line); err != nil {
 					return err
 				}
 			}
-			if len(lines) != seen {
-				flushWriter(w)
-			}
-			seen = len(lines)
+			flushWriter(w)
 		}
 	}
 }
@@ -1474,20 +1707,43 @@ func eventSeq(line []byte) int64 {
 	return ev.Sequence
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+// webhookWindow bounds how old a signed request may be. Together with the
+// dedupe receipt table this stops a captured request from being replayed.
+const webhookWindow = 5 * time.Minute
 
-// VerifyWebhook checks the signature. It is used by the signed webhook route.
-func Sign(secret, body []byte) string {
+// Sign computes the webhook signature. It covers the timestamp, the dedupe
+// key and the body, so none of them can be swapped on a captured request:
+//
+//	hex(HMAC-SHA256(secret, timestamp + "\n" + dedupe + "\n" + body))
+func Sign(secret []byte, timestamp, dedupe string, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(dedupe))
+	_, _ = mac.Write([]byte{'\n'})
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func VerifyWebhook(secret, body []byte, signature string) bool {
-	return hmac.Equal([]byte(Sign(secret, body)), []byte(signature))
+// VerifyWebhook checks the signature in constant time.
+func VerifyWebhook(secret []byte, timestamp, dedupe string, body []byte, signature string) bool {
+	return hmac.Equal([]byte(Sign(secret, timestamp, dedupe, body)), []byte(strings.TrimPrefix(signature, "v1=")))
+}
+
+func freshTimestamp(raw string, now time.Time) bool {
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return false
+	}
+	at := time.Unix(n, 0)
+	d := now.Sub(at)
+	if d < 0 {
+		d = -d
+	}
+	return d <= webhookWindow
+}
+
+func sandboxStatus() map[string]any {
+	st := sandbox.Probe()
+	return map[string]any{"supported": st.Supported, "abi": st.ABI, "reason": st.Reason, "disabled": sandbox.Disabled()}
 }

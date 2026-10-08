@@ -192,3 +192,33 @@ func (s *Store) AppliedMigrations(ctx context.Context) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) GetAccount(ctx context.Context, id string) (Account, error) {
+	var a Account
+	err := s.db.QueryRowContext(ctx, `SELECT id, auth_kind, credential_ref, concurrency, COALESCE(blocked_reason,''), COALESCE(blocked_until,''), created_at FROM accounts WHERE id=?`, id).
+		Scan(&a.ID, &a.AuthKind, &a.CredentialRef, &a.Concurrency, &a.BlockedReason, &a.BlockedUntil, &a.CreatedAt)
+	if err == sql.ErrNoRows {
+		return Account{}, ErrNotFound
+	}
+	return a, err
+}
+
+// InterventionCounts returns intervention counts per attempt for one
+// experiment in a single query.
+func (s *Store) InterventionCounts(ctx context.Context, experimentID string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT i.attempt_id, COUNT(1) FROM interventions i JOIN attempts a ON a.id=i.attempt_id JOIN trials t ON t.id=a.trial_id WHERE t.experiment_id=? GROUP BY i.attempt_id`, experimentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}

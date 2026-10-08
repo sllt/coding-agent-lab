@@ -9,7 +9,7 @@ type Fixture struct {
 
 func (f Fixture) Name() string { return "fixture" }
 func (f Fixture) Probe(context.Context, ProbeRequest) (Capabilities, error) {
-	return Capabilities{CLIVersion: "fixture", Executable: f.exe(), SupportsHeadless: true, SupportsStructuredLog: false, ReportsUsage: false, TestedPlatform: "linux/amd64", Probed: true, Verified: true}, nil
+	return Capabilities{CLIVersion: "fixture", Executable: f.exe(), SupportsHeadless: true, SupportsStructuredLog: false, ReportsUsage: false, TestedPlatform: "linux/amd64", Probed: true, Verified: true, Readiness: string(ReadinessReadyUnverified), CredentialSources: []string{"none_required"}, Blockers: []string{}}, nil
 }
 func (f Fixture) NewDecoder() EventDecoder { return NewLineDecoder() }
 func (f Fixture) exe() string {

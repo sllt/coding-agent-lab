@@ -250,6 +250,8 @@ func secure(listenAddr string, next http.Handler, ids *requestIDs) http.Handler 
 		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		sw := &statusWriter{ResponseWriter: w, id: id}
 		if !hostAllowed(r.Host) {
 			writeErr(sw, id, http.StatusBadRequest, "invalid_host", "Host 不在允许的本机地址内")
@@ -280,7 +282,10 @@ func newID() string {
 	return "req-" + hex.EncodeToString(b[:])
 }
 
-const contentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+// contentSecurityPolicy allows only same-origin scripts: no inline script and
+// no eval. Inline styles stay allowed because UI libraries set style
+// attributes; style injection cannot execute code.
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 func requireLoopback(addr string) error {
 	host, _, err := splitHostPortLoose(addr)

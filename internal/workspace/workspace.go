@@ -29,6 +29,9 @@ type Limits struct {
 	MaxBytes     int64
 }
 
+// Normalized returns the limits with defaults filled in.
+func (l Limits) Normalized() Limits { return l.normalize() }
+
 func (l Limits) normalize() Limits {
 	if l.MaxFiles <= 0 {
 		l.MaxFiles = DefaultMaxFiles

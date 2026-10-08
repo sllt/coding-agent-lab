@@ -45,6 +45,17 @@ func (a *API) retention(c *pi.Context) (any, error) {
 	if err != nil {
 		return a.fromErr(c, err)
 	}
+	rel := func(list []string) []string {
+		out := make([]string, 0, len(list))
+		for _, p := range list {
+			out = append(out, dataRel(a.svc.DataDir, p))
+		}
+		return out
+	}
+	plan.LogFiles, plan.ReportFiles, plan.KeptPatches = rel(plan.LogFiles), rel(plan.ReportFiles), rel(plan.KeptPatches)
+	if body.Apply {
+		a.audit(c, "retention_apply", "local")
+	}
 	return ok(c, http.StatusOK, plan)
 }
 
@@ -52,6 +63,12 @@ func (a *API) cleanQuarantine(c *pi.Context) (any, error) {
 	out, err := a.svc.CleanQuarantine(c)
 	if err != nil {
 		return a.fromErr(c, err)
+	}
+	for i := range out.Removed {
+		out.Removed[i] = dataRel(a.svc.DataDir, out.Removed[i])
+	}
+	for i := range out.KeptEvidence {
+		out.KeptEvidence[i] = dataRel(a.svc.DataDir, out.KeptEvidence[i])
 	}
 	return ok(c, http.StatusOK, out)
 }

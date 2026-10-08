@@ -29,6 +29,9 @@ type Input struct {
 	AgentMillis    *int64
 	EndToEndMillis *int64
 	Interventions  int
+	// BudgetDigest identifies the limits the attempt ran under. Empty means
+	// the attempt predates budget recording and stays off the default board.
+	BudgetDigest string
 }
 
 type Cell struct {
@@ -86,7 +89,7 @@ func Boards(rows []Input, taskCount int) ([]Board, error) {
 	for _, row := range rows {
 		in := domain.ComparisonInput{
 			Mode: row.Mode, TaskDigest: row.TaskDigest, EnvironmentDigest: row.Executor + ":" + row.Network,
-			ProtocolDigest: row.Protocol, VerifierDigest: row.TaskDigest, BudgetDigest: "unspecified",
+			ProtocolDigest: row.Protocol, VerifierDigest: row.TaskDigest, BudgetDigest: budgetOrUnspecified(row.BudgetDigest),
 			ProfileDigest: row.ProfileDig, Executor: row.Executor, Network: row.Network, ModelMismatch: row.ModelMismatch,
 		}
 		cmp, err := domain.ComparisonOf(in)
@@ -204,4 +207,11 @@ func appendUnique(base []string, extra ...string) []string {
 		base = append(base, item)
 	}
 	return base
+}
+
+func budgetOrUnspecified(d string) string {
+	if d == "" {
+		return "unspecified"
+	}
+	return d
 }

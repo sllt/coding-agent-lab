@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,9 +37,20 @@ type Service struct {
 	DataDir     string
 	ExecPath    string
 	GlobalLimit int
+	// WallSeconds is the operator default for the agent phase. Task limits,
+	// profile limits, settings.json and AGENTLAB_AGENT_WALL_SECONDS override it.
 	WallSeconds int
-	maint       atomic.Bool
+	// maintenance is a set of reasons. Clearing one reason (say, a finished
+	// backup) must not clear another (a store failure or the operator switch).
+	maintMu     sync.Mutex
+	maintenance map[string]bool
 	fatal       atomic.Value
+	backupBusy  atomic.Bool
+	logins      loginLimiter
+	// inflight tracks attempts started by dispatch so shutdown can drain them.
+	inflight sync.WaitGroup
+	wakeMu   sync.Mutex
+	wake     chan struct{}
 }
 
 type TaskSnapshot struct {
@@ -50,6 +62,8 @@ type TaskSnapshot struct {
 	ContentDigest  string `json:"content_digest,omitempty"`
 	SnapshotDir    string `json:"snapshot_dir,omitempty"`
 	VerifierDigest string `json:"verifier_digest,omitempty"`
+	// Limits come from the task draft. Nil means the task did not declare any.
+	Limits *domain.Limits `json:"limits,omitempty"`
 }
 
 type ProfileSnapshot struct {
@@ -64,6 +78,15 @@ type ProfileSnapshot struct {
 	BillingPath           string `json:"billing_path,omitempty"`
 	EntitlementVerifiedAt string `json:"entitlement_verified_at,omitempty"`
 	ResolvedModel         string `json:"resolved_model,omitempty"`
+	// CredentialEnv lists environment variable names forwarded to the agent.
+	// Values are read from the control-plane environment at launch and never stored.
+	CredentialEnv []string `json:"credential_env,omitempty"`
+	// InheritHome runs the agent with the operator's real HOME so CLI login
+	// files work. It weakens isolation and is recorded on every attempt.
+	InheritHome bool `json:"inherit_home,omitempty"`
+	// WallSeconds overrides the agent wall clock for this profile. A value that
+	// differs between profiles makes their results incomparable.
+	WallSeconds int `json:"wall_seconds,omitempty"`
 }
 
 var (
@@ -72,8 +95,56 @@ var (
 	ErrAdminExists  = errors.New("admin exists")
 )
 
-func (s *Service) SetMaintenance(on bool) { s.maint.Store(on) }
-func (s *Service) Maintenance() bool      { return s.maint.Load() }
+// SetMaintenance toggles the operator's own maintenance switch.
+func (s *Service) SetMaintenance(on bool) { s.setMaintenance("operator", on) }
+
+// Maintenance reports whether any reason holds the control plane in maintenance.
+func (s *Service) Maintenance() bool {
+	s.maintMu.Lock()
+	defer s.maintMu.Unlock()
+	return len(s.maintenance) > 0
+}
+
+// MaintenanceReasons lists the active reasons, sorted.
+func (s *Service) MaintenanceReasons() []string {
+	s.maintMu.Lock()
+	defer s.maintMu.Unlock()
+	out := make([]string, 0, len(s.maintenance))
+	for k := range s.maintenance {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Service) setMaintenance(reason string, on bool) {
+	s.maintMu.Lock()
+	defer s.maintMu.Unlock()
+	if s.maintenance == nil {
+		s.maintenance = map[string]bool{}
+	}
+	if on {
+		s.maintenance[reason] = true
+	} else {
+		delete(s.maintenance, reason)
+	}
+}
+
+// ErrBusy means another exclusive maintenance operation is running.
+var ErrBusy = errors.New("busy")
+
+// BeginBackup holds maintenance for a backup. Only one backup may run at a
+// time; a second caller gets ErrBusy.
+func (s *Service) BeginBackup() (func(), error) {
+	if !s.backupBusy.CompareAndSwap(false, true) {
+		return nil, ErrBusy
+	}
+	s.setMaintenance("backup", true)
+	return func() {
+		s.setMaintenance("backup", false)
+		s.backupBusy.Store(false)
+	}, nil
+}
 
 func (s *Service) Setup(ctx context.Context, username, password string) error {
 	if len(password) < 8 {
@@ -92,14 +163,35 @@ func (s *Service) Setup(ctx context.Context, username, password string) error {
 	return nil
 }
 
+// ErrLocked means too many failed logins; RetryAfter says how long to wait.
+type ErrLocked struct{ RetryAfter time.Duration }
+
+func (e ErrLocked) Error() string { return "login locked" }
+
+// dummyHash is compared when the user does not exist, so a wrong username
+// costs the same bcrypt time as a wrong password.
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("agentlab-no-such-user"), bcrypt.DefaultCost)
+
 func (s *Service) Login(ctx context.Context, username, password string) (token, csrf string, err error) {
+	if wait := s.logins.locked(username); wait > 0 {
+		return "", "", ErrLocked{RetryAfter: wait}
+	}
 	id, hash, err := s.Store.UserByName(ctx, username)
-	if err != nil {
+	if err != nil && !errors.Is(err, sqlite.ErrNotFound) {
 		return "", "", err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+	if errors.Is(err, sqlite.ErrNotFound) {
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		s.logins.fail(username)
 		return "", "", sqlite.ErrNotFound
 	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+		if wait := s.logins.fail(username); wait > 0 {
+			_ = s.Store.Audit(ctx, "control", "login_locked", id, `{}`)
+		}
+		return "", "", sqlite.ErrNotFound
+	}
+	s.logins.succeed(username)
 	token = domain.NewID("tok")
 	csrf = domain.NewID("csrf")
 	sum := sha256.Sum256([]byte(token))
@@ -191,10 +283,14 @@ func (s *Service) PublishTask(ctx context.Context, taskID string) (sqlite.TaskVe
 		}
 		body, err := json.Marshal(struct {
 			verifier.Outcome
-			ContentDigest     string `json:"content_digest"`
-			VerifierDigest    string `json:"verifier_digest"`
-			EnvironmentDigest string `json:"environment_digest"`
-		}{Outcome: pre, ContentDigest: snap.ContentDigest, VerifierDigest: snap.VerifierDigest, EnvironmentDigest: "native-trusted:unrestricted"})
+			// Raw verifier output can quote hidden tests; it is never stored
+			// with the version or returned by the API.
+			Logs              struct{} `json:"-"`
+			LogsWithheld      bool     `json:"logs_withheld"`
+			ContentDigest     string   `json:"content_digest"`
+			VerifierDigest    string   `json:"verifier_digest"`
+			EnvironmentDigest string   `json:"environment_digest"`
+		}{Outcome: pre, LogsWithheld: true, ContentDigest: snap.ContentDigest, VerifierDigest: snap.VerifierDigest, EnvironmentDigest: "native-trusted:unrestricted"})
 		if err != nil {
 			return sqlite.TaskVersion{}, err
 		}
@@ -212,6 +308,23 @@ func (s *Service) PublishTask(ctx context.Context, taskID string) (sqlite.TaskVe
 		return sqlite.TaskVersion{}, err
 	}
 	return s.Store.PublishTaskVersion(ctx, taskID, string(body), digest, preJSON)
+}
+
+// ProfileDoctor probes a profile snapshot. allowModelCall starts one paid
+// smoke call and is only passed when the operator asked for it.
+func (s *Service) ProfileDoctor(ctx context.Context, snap ProfileSnapshot, allowModelCall bool) doctor.Report {
+	report := doctor.Run(ctx, doctor.Request{
+		Adapter: snap.Adapter, Executable: snap.Executable, ModelID: snap.Model,
+		CredentialEnv: snap.CredentialEnv, InheritHome: snap.InheritHome, ApproveTools: snap.ApproveTools,
+		AllowModelCall: allowModelCall,
+	})
+	if snap.Adapter == "cursor" && !snap.ApproveTools {
+		report.Hints = append(report.Hints, "未批准 --force，Cursor 不能写文件。")
+	}
+	if snap.InheritHome {
+		report.Hints = append(report.Hints, "inherit_home 打开：Agent 能读到真实 HOME 里的所有文件。")
+	}
+	return report
 }
 
 func (s *Service) PublishProfile(ctx context.Context, profileID string) (sqlite.ProfileVersion, error) {
@@ -233,24 +346,25 @@ func (s *Service) PublishProfile(ctx context.Context, profileID string) (sqlite.
 	if snap.Adapter != "fixture" && snap.FakeMode != "" {
 		return sqlite.ProfileVersion{}, ErrUnexecutable
 	}
-	report := doctor.Static(ctx, snap.Adapter, snap.Executable, snap.Model, false)
+	for _, name := range snap.CredentialEnv {
+		if !agent.ValidCredentialEnv(name) {
+			return sqlite.ProfileVersion{}, fmt.Errorf("%w: credential_env %q is not an allowed variable name", ErrUnexecutable, name)
+		}
+	}
+	if snap.WallSeconds < 0 || snap.WallSeconds > maxWallSeconds {
+		return sqlite.ProfileVersion{}, fmt.Errorf("%w: wall_seconds out of range", ErrUnexecutable)
+	}
+	report := s.ProfileDoctor(ctx, snap, false)
 	report.Executor = snap.Executor
 	report.Network = snap.Network
-	if snap.Adapter == "cursor" && !snap.ApproveTools {
-		report.Note = strings.TrimSpace(report.Note + " 未批准 --force，Cursor 不能写文件。")
-	}
 	doc, err := json.Marshal(report)
 	if err != nil {
 		return sqlite.ProfileVersion{}, err
 	}
-	if snap.Adapter != "fixture" {
-		// An authorized model smoke is not implemented. A timestamp the user
-		// typed is not verification, so a real profile stays unexecutable.
-		if !report.Verified || !report.StaticPassed {
-			return sqlite.ProfileVersion{}, ErrUnexecutable
-		}
-	}
-	if !report.StaticPassed || strings.Contains(profile.DraftJSON, "REPLACE_") {
+	// A real CLI is publishable once the static probe reaches ready_unverified:
+	// the CLI runs, its headless flags exist and a credential source is present.
+	// "verified" additionally needs an authorized smoke call and is not required.
+	if !report.StaticPassed || !report.Runnable || strings.Contains(profile.DraftJSON, "REPLACE_") {
 		return sqlite.ProfileVersion{}, ErrUnexecutable
 	}
 	body, err := json.Marshal(snap)
@@ -272,6 +386,10 @@ type ExperimentRequest struct {
 	ProfileVersionIDs []string `json:"profile_version_ids"`
 	Repetitions       int      `json:"repetitions"`
 	Protocol          string   `json:"protocol"`
+	// Name and Description are display metadata; they are excluded from the
+	// plan and its digest.
+	Name        string `json:"-"`
+	Description string `json:"-"`
 }
 
 func (s *Service) SubmitExperiment(ctx context.Context, req ExperimentRequest) (sqlite.Experiment, error) {
@@ -348,101 +466,11 @@ func (s *Service) SubmitExperiment(ctx context.Context, req ExperimentRequest) (
 	if err != nil {
 		return sqlite.Experiment{}, err
 	}
-	return s.Store.SubmitExperiment(ctx, req.Actor, req.IdempotencyKey, digest, req.Mode, req.Protocol, string(plan), trials)
-}
-
-func (s *Service) Loop(ctx context.Context) error {
-	if err := s.Recover(ctx); err != nil {
-		s.noteFatal(err)
+	meta := sqlite.ExperimentMeta{Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description)}
+	if len([]rune(meta.Name)) > 120 || len([]rune(meta.Description)) > 2000 {
+		return sqlite.Experiment{}, ErrUnexecutable
 	}
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if s.Maintenance() {
-				continue
-			}
-			s.RetryNotifications(ctx)
-			if err := s.Pump(ctx, s.limit()); err != nil && fatalStore(err) {
-				s.noteFatal(err)
-			}
-		}
-	}
-}
-
-func (s *Service) wall() int {
-	if s.WallSeconds <= 0 {
-		return 20
-	}
-	return s.WallSeconds
-}
-
-// Pump starts queued trials up to the global limit. Admission is serial so the
-// second CreateAttempt happens before the first execute returns. The runs
-// themselves overlap when the limit is greater than one. A single trial
-// failure does not stop the loop.
-func (s *Service) Pump(ctx context.Context, globalLimit int) error {
-	if globalLimit <= 0 {
-		globalLimit = s.limit()
-	}
-	queued, err := s.Store.ListQueued(ctx)
-	if err != nil {
-		return err
-	}
-	var wg sync.WaitGroup
-	for _, trial := range queued {
-		if s.Maintenance() {
-			break
-		}
-		active, err := s.Store.GlobalActiveAttempts(ctx)
-		if err != nil {
-			wg.Wait()
-			return err
-		}
-		if active >= globalLimit {
-			break
-		}
-		account, err := s.Store.ProfileAccount(ctx, trial.ProfileVersionID)
-		if err != nil {
-			wg.Wait()
-			return err
-		}
-		reason := ""
-		repairMark := filepath.Join(s.DataDir, "repairs", trial.ID)
-		if _, err := os.Stat(repairMark); err == nil {
-			reason = "protocol_repair"
-			_ = os.Remove(repairMark)
-		}
-		attempt, err := s.Store.CreateAttempt(ctx, trial.ID, account, NativeRuntime(), reason, globalLimit, 1)
-		if err != nil {
-			if errors.Is(err, sqlite.ErrConflict) || errors.Is(err, sqlite.ErrCapacity) || errors.Is(err, sqlite.ErrAccountBlocked) {
-				continue
-			}
-			wg.Wait()
-			return err
-		}
-		wg.Add(1)
-		go func(trial sqlite.Trial, attempt sqlite.Attempt) {
-			defer wg.Done()
-			if err := s.execute(ctx, trial, attempt); err != nil {
-				if errors.Is(err, sqlite.ErrConflict) {
-					_ = s.finishCancelled(ctx, trial.ID, attempt)
-					return
-				}
-				if fatalStore(err) {
-					s.noteFatal(err)
-					return
-				}
-				_ = s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupQuarantined), err.Error())
-			}
-			s.scheduleRepair(ctx, trial.ID)
-		}(trial, attempt)
-	}
-	wg.Wait()
-	return nil
+	return s.Store.SubmitExperiment(ctx, req.Actor, req.IdempotencyKey, digest, req.Mode, req.Protocol, string(plan), trials, meta)
 }
 
 func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlite.Attempt) error {
@@ -465,8 +493,29 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	if profile.Adapter == "" {
 		profile.Adapter = "fixture"
 	}
-	if profile.Adapter != "fixture" || profile.FakeMode != "" && profile.Adapter != "fixture" {
-		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "profile_not_verified")
+	realAgent := profile.Adapter != "fixture"
+	var adapter agent.Adapter
+	if realAgent {
+		ad, ok := agent.ByName(profile.Adapter)
+		if !ok || profile.FakeMode != "" {
+			return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "unknown_adapter")
+		}
+		adapter = ad
+		exe := profile.Executable
+		if exe == "" {
+			exe = agent.DefaultExecutable(profile.Adapter)
+		}
+		// The profile passed a full probe at publish time. Re-check only that the
+		// executable still resolves: a missing CLI is an infrastructure failure,
+		// not the agent failing the task.
+		if _, err := exec.LookPath(exe); err != nil {
+			return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "cli_not_found")
+		}
+		for _, name := range profile.CredentialEnv {
+			if !agent.ValidCredentialEnv(name) {
+				return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "credential_env_invalid")
+			}
+		}
 	}
 	if err := validateExecution(profile); err != nil {
 		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "executor_rejected")
@@ -542,8 +591,24 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		}
 	}
 	identityToken := domain.NewID("idn")
+	wall, wallSource := s.wallFor(snap, profile)
+	budget, wsLimits, logBytes := budgetFor(snap, profile, wall, wallSource)
+	credNames := append([]string{}, profile.CredentialEnv...)
+	if realAgent {
+		if ref := s.accountCredentialEnv(ctx, attempt.AccountID); ref != "" {
+			credNames = appendUniqueString(credNames, ref)
+		}
+	}
 	runtime := withIdentity(attempt.RuntimeJSON, identityToken, 0, "")
-	runtime = mergeRuntime(runtime, map[string]any{"executor": profile.Executor, "network": profile.Network, "home_inherited": false})
+	runtime = mergeRuntime(runtime, map[string]any{
+		"executor": profile.Executor, "network": profile.Network,
+		"home_inherited": realAgent && profile.InheritHome,
+		"adapter":        profile.Adapter,
+		"budget":         budget,
+		"budget_digest":  budgetDigest(budget),
+		// Names only. Values never enter the database.
+		"credential_env": credNames,
+	})
 	_ = s.Store.UpdateRuntime(ctx, attempt.ID, runtime)
 	attemptDir := filepath.Join(s.DataDir, "attempts", attempt.ID)
 	control := filepath.Join(attemptDir, "control")
@@ -557,24 +622,26 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 	}
 	spec := runner.Spec{
 		SchemaVersion: "agentlab.exec/v1", AttemptID: attempt.ID, Fence: attempt.Fence, Token: attempt.Token,
-		WorkDir: work, BaselineDir: base, Executor: profile.Executor, Network: profile.Network, WallSeconds: s.wall(),
+		WorkDir: work, BaselineDir: base, Executor: profile.Executor, Network: profile.Network, WallSeconds: wall,
+		Limits: wsLimits, LogBytes: logBytes,
 		ControlDir: control, HomeDir: home, TmpDir: tmp,
 		Launch: agent.LaunchSpec{Executable: exe, Args: []string{"fake-agent"}, Env: env, WorkDir: work},
 		Prompt: snap.Prompt, IdentityToken: identityToken,
 	}
-	if profile.Adapter != "" && profile.Adapter != "fixture" {
-		ad, ok := agent.ByName(profile.Adapter)
-		if !ok {
-			return errors.New("unknown adapter")
-		}
-		spec.Launch, err = ad.BuildLaunch(ctx, agent.LaunchRequest{ModelID: profile.Model, Prompt: snap.Prompt, WorkDir: work, Env: env, ApproveTools: profile.ApproveTools})
+	if realAgent {
+		spec.Launch, err = adapter.BuildLaunch(ctx, agent.LaunchRequest{ModelID: profile.Model, Prompt: snap.Prompt, WorkDir: work, Env: env, ApproveTools: profile.ApproveTools})
 		if err != nil {
-			return err
+			return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "launch_rejected")
 		}
 		if profile.Executable != "" {
 			spec.Launch.Executable = profile.Executable
 		}
-		spec.Launch.Env = env
+		spec.Launch.Env = map[string]string{}
+		spec.PassEnv = credNames
+		spec.InheritHome = profile.InheritHome
+		policy, record := s.sandboxFor(spec.Launch.Executable, work, home, tmp, profile.InheritHome)
+		spec.Sandbox = policy
+		runtime = mergeRuntime(runtime, record)
 	}
 	if profile.ResolvedModel != "" && profile.ResolvedModel != profile.Model {
 		runtime = mergeRuntime(runtime, map[string]any{
@@ -626,6 +693,15 @@ func (s *Service) execute(ctx context.Context, trial sqlite.Trial, attempt sqlit
 		return err
 	}
 	cancelled := fresh.CancelRequested || current.State == string(domain.ExecCancelling)
+	if !cancelled && realAgent && agentAuthSuspected(events) && workspaceUnchanged(base, work) {
+		// The CLI exited non-zero, printed an authentication error and changed
+		// nothing. That is an infrastructure failure: the agent never worked on
+		// the task, so the verifier's "fail" would misattribute it. The account
+		// is not blocked automatically because the signal comes from agent output.
+		s.stampPhases(ctx, attempt, queueMs, agentMs, nil)
+		_ = s.Store.Audit(ctx, "control", "auth_suspected", attempt.ID, `{"source":"agent_output_heuristic"}`)
+		return s.Store.FinishAttempt(ctx, attempt.ID, attempt.Fence, string(domain.ExecAborted), string(domain.VerdictInconclusive), string(domain.CleanupClean), "authentication_failed")
+	}
 	if !cancelled && runnerAuthFailed(events) {
 		_ = s.Store.BlockAccount(ctx, attempt.AccountID, "authentication_failed")
 		_ = s.Store.Audit(ctx, "control", "block_account", attempt.AccountID, `{"reason":"authentication_failed","source":"runner"}`)
@@ -1053,9 +1129,16 @@ func withIdentity(runtime, token string, pid int, start string) string {
 	if _, ok := m["network"]; !ok {
 		m["network"] = "unrestricted"
 	}
-	m["home_inherited"] = false
-	m["isolation"] = "observational/native"
-	m["limitation"] = "HOME 是本次运行的空目录。同一用户仍能访问控制面文件，这不是容器隔离。"
+	inherited, _ := m["home_inherited"].(bool)
+	m["home_inherited"] = inherited
+	if _, ok := m["isolation"]; !ok {
+		m["isolation"] = "observational/native"
+	}
+	if inherited {
+		m["limitation"] = "继承了真实 HOME（用于 CLI 登录态）。Agent 可以读写该用户的主目录，这不是容器隔离。"
+	} else {
+		m["limitation"] = "HOME 是本次运行的空目录。同一用户仍能访问控制面文件，这不是容器隔离。"
+	}
 	if token != "" {
 		m["identity_token"] = token
 	}
@@ -1188,9 +1271,11 @@ func decodeTaskDraft(raw []byte) (TaskSnapshot, error) {
 		if blockers := domain.PublishBlockers(draft); len(blockers) > 0 {
 			return TaskSnapshot{}, errors.New(strings.Join(blockers, ","))
 		}
+		limits := draft.Limits
 		return TaskSnapshot{
 			Name: draft.Name, Prompt: draft.Prompt, BaseCommit: draft.Source.BaseRef,
 			SourceDir: draft.Source.Directory, VerifierRoot: draft.Source.VerifierRoot,
+			Limits: &limits,
 		}, nil
 	}
 	var snap TaskSnapshot
@@ -1209,10 +1294,14 @@ func decodeProfileDraft(raw []byte) (ProfileSnapshot, error) {
 		if blockers := domain.PublishBlockers(draft); len(blockers) > 0 {
 			return ProfileSnapshot{}, errors.New(strings.Join(blockers, ","))
 		}
-		return ProfileSnapshot{
+		snap := ProfileSnapshot{
 			Adapter: draft.Adapter, Model: draft.Model.RequestedID, Executor: draft.Execution.Executor,
 			DisplayName: draft.Name, Executable: draft.CLI.Executable,
-		}, nil
+		}
+		if ref := strings.TrimSpace(draft.Auth.CredentialRef); strings.HasPrefix(ref, "env:") {
+			snap.CredentialEnv = []string{strings.TrimPrefix(ref, "env:")}
+		}
+		return snap, nil
 	}
 	var snap ProfileSnapshot
 	if err := domain.UnmarshalStrict(raw, &snap); err != nil {
@@ -1429,7 +1518,7 @@ func (s *Service) noteFatal(err error) {
 	if err == nil {
 		return
 	}
-	s.maint.Store(true)
+	s.setMaintenance("store_error", true)
 	s.fatal.Store(err.Error())
 }
 

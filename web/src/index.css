@@ -1,20 +1,157 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. Neutrals are zinc, the accent is indigo, and status colours
+   are semantic so pages never pick raw hues. Values are oklch so light and
+   dark keep the same perceived contrast. */
 :root {
-  color: #1c1915;
-  background: #f4efe6;
-  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", serif;
+  --background: oklch(0.985 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285.9);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285.9);
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.552 0.016 285.9);
+  --accent: oklch(0.967 0.001 286.4);
+  --accent-foreground: oklch(0.21 0.006 285.9);
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.92 0.004 286.3);
+  --ring: oklch(0.585 0.233 277.1);
+  --primary: oklch(0.511 0.262 276.97);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-soft: oklch(0.962 0.018 272.3);
+  --primary-soft-foreground: oklch(0.457 0.24 277.0);
+  --success: oklch(0.596 0.145 163.2);
+  --success-soft: oklch(0.962 0.044 156.7);
+  --success-soft-foreground: oklch(0.432 0.095 166.9);
+  --warning: oklch(0.769 0.188 70.08);
+  --warning-soft: oklch(0.987 0.022 95.3);
+  --warning-soft-foreground: oklch(0.473 0.137 46.2);
+  --danger: oklch(0.586 0.253 17.6);
+  --danger-soft: oklch(0.969 0.015 12.4);
+  --danger-soft-foreground: oklch(0.455 0.188 13.7);
+  --info: oklch(0.588 0.158 241.97);
+  --info-soft: oklch(0.951 0.026 236.8);
+  --info-soft-foreground: oklch(0.443 0.11 240.8);
+  --sidebar: oklch(0.975 0.001 286.4);
+  --sidebar-border: oklch(0.92 0.004 286.3);
+  --radius: 0.625rem;
+  color-scheme: light;
 }
 
-body {
-  margin: 0;
-  min-height: 100vh;
+.dark {
+  --background: oklch(0.141 0.005 285.8);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.181 0.006 285.9);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.006 285.9);
+  --popover-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.244 0.006 286.0);
+  --muted-foreground: oklch(0.705 0.015 286.1);
+  --accent: oklch(0.274 0.006 286.0);
+  --accent-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 13%);
+  --ring: oklch(0.673 0.182 276.9);
+  --primary: oklch(0.585 0.233 277.1);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-soft: oklch(0.585 0.233 277.1 / 16%);
+  --primary-soft-foreground: oklch(0.785 0.115 274.7);
+  --success: oklch(0.696 0.17 162.5);
+  --success-soft: oklch(0.696 0.17 162.5 / 14%);
+  --success-soft-foreground: oklch(0.845 0.13 164.9);
+  --warning: oklch(0.795 0.184 86.05);
+  --warning-soft: oklch(0.795 0.184 86.05 / 14%);
+  --warning-soft-foreground: oklch(0.879 0.169 91.6);
+  --danger: oklch(0.645 0.246 16.4);
+  --danger-soft: oklch(0.645 0.246 16.4 / 15%);
+  --danger-soft-foreground: oklch(0.81 0.117 11.6);
+  --info: oklch(0.685 0.169 237.3);
+  --info-soft: oklch(0.685 0.169 237.3 / 15%);
+  --info-soft-foreground: oklch(0.828 0.111 230.3);
+  --sidebar: oklch(0.161 0.005 285.8);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  color-scheme: dark;
 }
 
-button, input, select, textarea {
-  font: inherit;
+@theme inline {
+  --font-sans: "Inter Variable", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SFMono-Regular", ui-monospace, "Cascadia Code", Menlo, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-soft-foreground: var(--success-soft-foreground);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-soft-foreground: var(--warning-soft-foreground);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-soft-foreground: var(--danger-soft-foreground);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-soft-foreground: var(--info-soft-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-border: var(--sidebar-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --animate-in: enter 150ms ease-out;
+  --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
 }
 
-pre, code, .mono {
-  font-family: "IBM Plex Mono", "Source Code Pro", ui-monospace, monospace;
+@keyframes enter {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@layer base {
+  * { border-color: var(--color-border); }
+  html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+  }
+  button, input, select, textarea { font: inherit; }
+  code, pre, kbd, .font-mono { font-family: var(--font-mono); font-feature-settings: normal; }
+  ::selection { background: var(--color-primary-soft); }
+  :focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; }
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
 }

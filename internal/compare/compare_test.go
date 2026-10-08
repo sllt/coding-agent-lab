@@ -106,3 +106,24 @@ func TestMissingDurationStaysNull(t *testing.T) {
 		t.Fatalf("missing duration became a number: %+v %v", boards[0].Cells[0], err)
 	}
 }
+
+func TestRecordedBudgetMakesBoardsComparable(t *testing.T) {
+	base := Input{Mode: domain.ModeAgentProfile, Protocol: "single-pass-v1", TaskID: "t1", TaskDigest: "task", Executor: "native-trusted", Network: "unrestricted", Verdict: "pass", Terminal: true}
+	a, b := base, base
+	a.ProfileID, a.ProfileDig, a.BudgetDigest = "p1", "a", "budget-1"
+	b.ProfileID, b.ProfileDig, b.BudgetDigest, b.Verdict = "p2", "b", "budget-1", "fail"
+	boards, err := Boards([]Input{a, b}, 1)
+	if err != nil || len(boards) != 1 || !boards[0].Comparable || len(boards[0].Cells) != 2 {
+		t.Fatalf("recorded budget %+v %v", boards, err)
+	}
+	b.BudgetDigest = "budget-2"
+	boards, err = Boards([]Input{a, b}, 1)
+	if err != nil || len(boards) != 2 {
+		t.Fatalf("different budgets shared a board %+v %v", boards, err)
+	}
+	a.BudgetDigest, b.BudgetDigest = "", ""
+	boards, err = Boards([]Input{a, b}, 1)
+	if err != nil || boards[0].Comparable {
+		t.Fatalf("missing budget was comparable %+v", boards)
+	}
+}

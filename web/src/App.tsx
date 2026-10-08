@@ -1,73 +1,87 @@
-import { useEffect, useState } from 'react'
-import { Link, NavLink, Route, BrowserRouter, Routes } from 'react-router-dom'
-import { api } from './api.ts'
-import { Notice } from './components/ui.tsx'
-import { Compare } from './pages/Compare.tsx'
-import { ExperimentDetail } from './pages/ExperimentDetail.tsx'
+import { useQueryClient } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
+import { toast } from 'sonner'
+import { api, setUnauthorizedHandler } from './api.ts'
+import { AppShell } from './components/layout/AppShell.tsx'
+import { PageBody } from './components/layout/PageHeader.tsx'
+import { Empty, Skeleton } from './components/ui/index.ts'
+import { Dashboard } from './pages/Dashboard.tsx'
 import { Experiments } from './pages/Experiments.tsx'
 import { Login } from './pages/Login.tsx'
-import { NewExperiment } from './pages/NewExperiment.tsx'
-import { Overview } from './pages/Overview.tsx'
-import { Profiles } from './pages/Profiles.tsx'
-import { Projects } from './pages/Projects.tsx'
-import { Settings } from './pages/Settings.tsx'
-import { TrialDetail } from './pages/TrialDetail.tsx'
 
-const links = [
-  ['/', '概览'],
-  ['/projects', '项目与任务'],
-  ['/experiments', '实验'],
-  ['/compare', '对比'],
-  ['/profiles', 'Agent 配置'],
-  ['/settings', '设置'],
-]
+// Heavier pages load on demand so the first paint only ships the shell,
+// the dashboard and the experiment list.
+const Agents = lazy(() => import('./pages/Agents.tsx').then((m) => ({ default: m.Agents })))
+const Compare = lazy(() => import('./pages/Compare.tsx').then((m) => ({ default: m.Compare })))
+const ExperimentDetail = lazy(() => import('./pages/ExperimentDetail.tsx').then((m) => ({ default: m.ExperimentDetail })))
+const NewExperiment = lazy(() => import('./pages/NewExperiment.tsx').then((m) => ({ default: m.NewExperiment })))
+const Settings = lazy(() => import('./pages/Settings.tsx').then((m) => ({ default: m.Settings })))
+const Tasks = lazy(() => import('./pages/Tasks.tsx').then((m) => ({ default: m.Tasks })))
+const TrialDetail = lazy(() => import('./pages/TrialDetail.tsx').then((m) => ({ default: m.TrialDetail })))
+
+type AuthState = 'checking' | 'in' | 'out'
 
 export default function App() {
-  const [ready, setReady] = useState(false)
-  const [authed, setAuthed] = useState(false)
+  const [auth, setAuth] = useState<AuthState>('checking')
+  const qc = useQueryClient()
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuth((prev) => {
+        if (prev === 'in') toast.warning('会话已过期，请重新登录')
+        return 'out'
+      })
+      qc.clear()
+    })
+    return () => setUnauthorizedHandler(null)
+  }, [qc])
+
   useEffect(() => {
     api.request<{ csrf_token: string }>('GET', '/api/v1/session')
-      .then((data) => { api.csrf = data.csrf_token; setAuthed(true) })
-      .catch(() => setAuthed(false))
-      .finally(() => setReady(true))
+      .then((data) => { api.csrf = data.csrf_token; setAuth('in') })
+      .catch(() => setAuth('out'))
   }, [])
-  if (!ready) return <main className="p-6"><Notice>正在连接本机控制面。</Notice></main>
-  if (!authed) return <Login onReady={() => setAuthed(true)} />
+
+  if (auth === 'checking') {
+    return (
+      <div className="flex min-h-screen items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />正在连接本机控制面
+      </div>
+    )
+  }
+  if (auth === 'out') return <Login onReady={() => setAuth('in')} />
+
+  const logout = () => {
+    void api.request('POST', '/api/v1/logout').finally(() => {
+      api.csrf = ''
+      qc.clear()
+      setAuth('out')
+    })
+  }
+
   return (
     <BrowserRouter>
-      <div className="min-h-screen md:grid md:grid-cols-[220px_1fr]">
-        <nav className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-[#1c1915]/10 bg-[#ebe4d8] px-3 py-3 md:flex-col md:items-stretch md:border-b-0 md:border-r">
-          <span className="text-sm font-semibold">Coding Agent Lab</span>
-          {links.map(([to, name]) => (
-            <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => isActive ? 'text-sm underline' : 'text-sm'}>{name}</NavLink>
-          ))}
-          <button className="text-left text-sm" onClick={() => void api.request('POST', '/api/v1/logout').then(() => { api.csrf = ''; setAuthed(false) })}>退出</button>
-        </nav>
-        <main className="px-4 py-6 md:px-8">
-          <Routes>
-            <Route path="/" element={<Overview />} />
-            <Route path="/projects" element={<Projects />} />
-            <Route path="/experiments" element={<Experiments />} />
-            <Route path="/experiments/new" element={<NewExperiment />} />
-            <Route path="/experiments/:id" element={<ExperimentDetail />} />
-            <Route path="/trials/:id" element={<TrialDetail />} />
-            <Route path="/compare" element={<Compare />} />
-            <Route path="/profiles" element={<Profiles />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Missing />} />
-          </Routes>
-        </main>
-      </div>
+      <AppShell onLogout={logout}>
+        <Suspense fallback={<PageBody className="space-y-4"><Skeleton className="h-16" /><Skeleton className="h-64" /></PageBody>}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/experiments" element={<Experiments />} />
+          <Route path="/experiments/new" element={<NewExperiment />} />
+          <Route path="/experiments/:id" element={<ExperimentDetail />} />
+          <Route path="/trials/:id" element={<TrialDetail />} />
+          <Route path="/tasks" element={<Tasks />} />
+          <Route path="/agents" element={<Agents />} />
+          <Route path="/compare" element={<Compare />} />
+          <Route path="/settings" element={<Settings />} />
+          {/* Old paths keep working. */}
+          <Route path="/projects" element={<Tasks />} />
+          <Route path="/profiles" element={<Agents />} />
+          <Route path="*" element={<PageBody><Empty title="没有这个页面" description="这个地址不在工作台里。" action={<Link className="text-sm text-primary hover:underline" to="/">回到工作台</Link>} /></PageBody>} />
+        </Routes>
+        </Suspense>
+      </AppShell>
     </BrowserRouter>
-  )
-}
-
-function Missing() {
-  return (
-    <div className="flex flex-col gap-3">
-      <h1 className="text-2xl">没有这个页面</h1>
-      <Notice>这个地址不在工作台里。可以从概览重新开始。</Notice>
-      <Link className="text-sm underline" to="/">回到概览</Link>
-    </div>
   )
 }

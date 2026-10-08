@@ -16,6 +16,7 @@ import (
 	"github.com/sllt/agentlab/internal/doctor"
 	"github.com/sllt/agentlab/internal/httpapi"
 	"github.com/sllt/agentlab/internal/runner"
+	"github.com/sllt/agentlab/internal/sandbox"
 	"github.com/sllt/agentlab/internal/store/sqlite"
 	"github.com/sllt/agentlab/internal/version"
 )
@@ -44,13 +45,23 @@ func run(args []string) error {
 		return nil
 	case "runner":
 		return runner.Serve(context.Background(), os.Stdin, os.Stdout)
+	case "sandbox-exec":
+		// Only returns on failure; never fall back to running unconfined.
+		if err := sandbox.Exec(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "agentlab sandbox-exec:", err)
+			os.Exit(126)
+		}
+		return nil
 	case "doctor":
 		adapter := "fixture"
 		if len(args) > 1 {
 			adapter = args[1]
 		}
 		report := doctor.Static(context.Background(), adapter, "", "", false)
-		fmt.Printf("%s static=%t verified=%t model_call=%s network=%s blockers=%v\n", report.Adapter, report.StaticPassed, report.Verified, report.ModelCall, report.Network, report.Blockers)
+		fmt.Printf("%s readiness=%s static=%t verified=%t version=%q model_call=%s network=%s blockers=%v\n", report.Adapter, report.Readiness, report.StaticPassed, report.Verified, report.CLIVersion, report.ModelCall, report.Network, report.Blockers)
+		for _, hint := range report.Hints {
+			fmt.Println("  -", hint)
+		}
 		if !report.StaticPassed {
 			return errors.New("doctor 未通过")
 		}

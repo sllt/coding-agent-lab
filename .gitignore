@@ -11,3 +11,7 @@ web/dist/
 coverage/
 *.out
 .DS_Store
+
+# copied by scripts/build-web.sh for -tags webembed
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep

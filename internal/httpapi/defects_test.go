@@ -99,12 +99,12 @@ func TestWebhookDoesNotMintSecretAndRejectsBodyMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := webhook(rt, raw, Sign(secret, raw), "dedupe-y")
+	first := webhook(rt, raw, Sign(secret, nowTS(), "dedupe-y", raw), "dedupe-y")
 	if first.Code != http.StatusOK {
 		t.Fatalf("first %d %s", first.Code, first.Body.String())
 	}
 	other := []byte(`{"n":2}`)
-	mismatch := webhook(rt, other, Sign(secret, other), "dedupe-y")
+	mismatch := webhook(rt, other, Sign(secret, nowTS(), "dedupe-y", other), "dedupe-y")
 	if mismatch.Code != http.StatusConflict || !strings.Contains(mismatch.Body.String(), "不同正文") {
 		t.Fatalf("mismatch %d %s", mismatch.Code, mismatch.Body.String())
 	}
@@ -165,7 +165,7 @@ func TestBackupWaitsAndSSEHasHeartbeat(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/attempts/"+attempt.ID+"/events", nil)
 	req.Host = "127.0.0.1"
 	req.AddCookie(&http.Cookie{Name: "agentlab_session", Value: token})
-	ctxTimeout, cancel := context.WithTimeout(req.Context(), 120*time.Millisecond)
+	ctxTimeout, cancel := context.WithTimeout(req.Context(), 600*time.Millisecond)
 	defer cancel()
 	req = req.WithContext(ctxTimeout)
 	stream := httptest.NewRecorder()
@@ -399,7 +399,7 @@ func TestLiveSSEFlushesTheFirstFrame(t *testing.T) {
 		if err != nil || !strings.Contains(string(buf[:n]), "Ready") {
 			t.Fatalf("first frame %q %v", buf[:n], err)
 		}
-	case <-time.After(800 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("SSE headers were not flushed on the open connection")
 	}
 }

@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("not found")
-	ErrIdempotent      = errors.New("idempotency conflict")
-	ErrCapacity        = errors.New("capacity")
-	ErrAccountBlocked  = errors.New("account blocked")
-	ErrFinished        = errors.New("already finished")
+	ErrNotFound       = errors.New("not found")
+	ErrIdempotent     = errors.New("idempotency conflict")
+	ErrCapacity       = errors.New("capacity")
+	ErrAccountBlocked = errors.New("account blocked")
+	ErrFinished       = errors.New("already finished")
 )
 
 type Project struct {
@@ -90,6 +90,18 @@ type Experiment struct {
 	CreatedBy    string
 	CreatedAt    string
 	TrialCount   int
+	// Name and Description are display metadata (migration 006).
+	Name        string
+	Description string
+	// StateCounts and VerdictCounts are filled by list and get reads.
+	StateCounts   map[string]int
+	VerdictCounts map[string]int
+}
+
+// ExperimentMeta is optional display metadata for a submitted experiment.
+type ExperimentMeta struct {
+	Name        string
+	Description string
 }
 
 type Trial struct {
@@ -103,6 +115,9 @@ type Trial struct {
 	CurrentAttemptID string
 	RowVersion       int64
 	CancelRequested  bool
+	// EnqueueSeq is the FIFO position. QueuedAt is when it last entered the queue.
+	EnqueueSeq int64
+	QueuedAt   string
 }
 
 type Attempt struct {
@@ -138,7 +153,17 @@ func (s *Store) ListProjects(ctx context.Context, cursor string, limit int) ([]P
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, source_spec_json, created_at FROM projects WHERE id > ? ORDER BY id LIMIT ?`, cursor, limit+1)
+	// Keyset pagination in creation order. Ids are random, so ordering by id
+	// alone would list projects in an arbitrary order.
+	q := `SELECT id, name, source_spec_json, created_at FROM projects`
+	args := []any{}
+	if cursor != "" {
+		q += ` WHERE (created_at, id) > (SELECT created_at, id FROM projects WHERE id=?)`
+		args = append(args, cursor)
+	}
+	q += ` ORDER BY created_at, id LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -294,7 +319,11 @@ type NewTrial struct {
 // SubmitExperiment inserts one immutable plan and its trials. The same actor,
 // operation and key with the same body returns the original id. A different
 // body is a conflict and writes nothing.
-func (s *Store) SubmitExperiment(ctx context.Context, actor, key, bodyDigest, mode, protocol, plan string, trials []NewTrial) (Experiment, error) {
+func (s *Store) SubmitExperiment(ctx context.Context, actor, key, bodyDigest, mode, protocol, plan string, trials []NewTrial, meta ...ExperimentMeta) (Experiment, error) {
+	var m ExperimentMeta
+	if len(meta) > 0 {
+		m = meta[0]
+	}
 	var exp Experiment
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
 		var existingDigest, existingRef string
@@ -312,15 +341,20 @@ func (s *Store) SubmitExperiment(ctx context.Context, actor, key, bodyDigest, mo
 		if err != nil {
 			return err
 		}
-		exp = Experiment{ID: domain.NewID("exp"), Mode: mode, ProtocolJSON: protocol, PlanJSON: plan, PlanDigest: digest, State: string(domain.ExecQueued), CreatedBy: actor, CreatedAt: now(), TrialCount: len(trials)}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO experiments(id, mode, protocol_json, plan_json, plan_digest, state, created_by, created_at) VALUES(?,?,?,?,?,?,?,?)`,
-			exp.ID, exp.Mode, exp.ProtocolJSON, exp.PlanJSON, exp.PlanDigest, exp.State, exp.CreatedBy, exp.CreatedAt); err != nil {
+		exp = Experiment{ID: domain.NewID("exp"), Mode: mode, ProtocolJSON: protocol, PlanJSON: plan, PlanDigest: digest, State: string(domain.ExecQueued), CreatedBy: actor, CreatedAt: now(), TrialCount: len(trials), Name: m.Name, Description: m.Description}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO experiments(id, mode, protocol_json, plan_json, plan_digest, state, created_by, created_at, name, description) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			exp.ID, exp.Mode, exp.ProtocolJSON, exp.PlanJSON, exp.PlanDigest, exp.State, exp.CreatedBy, exp.CreatedAt, exp.Name, exp.Description); err != nil {
+			return err
+		}
+		var seq int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(enqueue_seq), 0) FROM trials`).Scan(&seq); err != nil {
 			return err
 		}
 		for _, t := range trials {
 			id := domain.NewID("trl")
-			if _, err := tx.ExecContext(ctx, `INSERT INTO trials(id, experiment_id, task_version_id, profile_version_id, repeat_index, execution_state, verdict, row_version) VALUES(?,?,?,?,?,?,?,1)`,
-				id, exp.ID, t.TaskVersionID, t.ProfileVersionID, t.RepeatIndex, string(domain.ExecQueued), string(domain.VerdictUnverified)); err != nil {
+			seq++
+			if _, err := tx.ExecContext(ctx, `INSERT INTO trials(id, experiment_id, task_version_id, profile_version_id, repeat_index, execution_state, verdict, row_version, enqueue_seq, queued_at) VALUES(?,?,?,?,?,?,?,1,?,?)`,
+				id, exp.ID, t.TaskVersionID, t.ProfileVersionID, t.RepeatIndex, string(domain.ExecQueued), string(domain.VerdictUnverified), seq, exp.CreatedAt); err != nil {
 				return err
 			}
 		}
@@ -452,8 +486,8 @@ func scanTaskVersion(row *sql.Row, v *TaskVersion) error {
 }
 
 func loadExperiment(ctx context.Context, tx *sql.Tx, id string, exp *Experiment) error {
-	if err := tx.QueryRowContext(ctx, `SELECT id, mode, protocol_json, plan_json, plan_digest, state, created_by, created_at FROM experiments WHERE id=?`, id).
-		Scan(&exp.ID, &exp.Mode, &exp.ProtocolJSON, &exp.PlanJSON, &exp.PlanDigest, &exp.State, &exp.CreatedBy, &exp.CreatedAt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT `+experimentCols+` FROM experiments WHERE id=?`, id).
+		Scan(&exp.ID, &exp.Mode, &exp.ProtocolJSON, &exp.PlanJSON, &exp.PlanDigest, &exp.State, &exp.CreatedBy, &exp.CreatedAt, &exp.Name, &exp.Description); err != nil {
 		return err
 	}
 	return tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM trials WHERE experiment_id=?`, id).Scan(&exp.TrialCount)

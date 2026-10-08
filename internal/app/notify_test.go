@@ -112,3 +112,49 @@ func TestLoopbackNotificationDeliversOnlyAfterAttempt(t *testing.T) {
 		t.Fatalf("delivered %d pending %d", delivered, pending)
 	}
 }
+
+func TestNotifyURLParsingRejectsUserinfoTricks(t *testing.T) {
+	for _, bad := range []string{
+		"http://127.0.0.1@evil.example/hook",
+		"http://127.0.0.1:80@evil.example:80/hook",
+		"http://localhost:1@169.254.169.254/latest",
+		"http://user:pass@127.0.0.1:9000/hook",
+		"http://127.0.0.1.evil.example:9000/hook",
+		"http://[::ffff:8.8.8.8]:9000/hook",
+		"http://127.0.0.1/hook",
+		"gopher://127.0.0.1:70/",
+		"http:127.0.0.1:9000",
+	} {
+		if _, err := ValidateNotifyURL(bad); err == nil {
+			t.Fatalf("%s was accepted", bad)
+		}
+	}
+	for _, good := range []string{"http://127.0.0.1:9000/hook", "http://localhost:8080/x", "http://[::1]:9000/y"} {
+		if _, err := ValidateNotifyURL(good); err != nil {
+			t.Fatalf("%s rejected: %v", good, err)
+		}
+	}
+}
+
+func TestNotifyDoesNotFollowRedirects(t *testing.T) {
+	hit := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+	svc := newLab(t)
+	ctx := context.Background()
+	if err := svc.Store.InsertNotification(ctx, "webhook_result", redirect.URL+"/hook", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	svc.RetryNotifications(ctx)
+	var state string
+	if err := svc.Store.DB().QueryRow(`SELECT state FROM notifications`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if hit || state != "failed" {
+		t.Fatalf("redirect followed=%v state=%s", hit, state)
+	}
+}

@@ -40,6 +40,7 @@ export const operations: Operation[] = [
   { operationId: "addReview", method: "POST", path: "/api/v1/attempts/{id}/reviews", requestSchema: "#/components/schemas/Review" },
   { operationId: "downloadArtifact", method: "GET", path: "/api/v1/artifacts/{id}/download", requestSchema: "" },
   { operationId: "comparisons", method: "GET", path: "/api/v1/comparisons", requestSchema: "" },
+  { operationId: "catalog", method: "GET", path: "/api/v1/catalog", requestSchema: "" },
   { operationId: "settings", method: "GET", path: "/api/v1/settings", requestSchema: "" },
   { operationId: "patchSettings", method: "PATCH", path: "/api/v1/settings", requestSchema: "#/components/schemas/SettingsPatch" },
   { operationId: "listAudit", method: "GET", path: "/api/v1/audit", requestSchema: "" },
@@ -66,18 +67,50 @@ export interface RequestOptions {
   csrf?: string
 }
 
+/** ApiError carries the HTTP status and the server error code. */
+export class ApiError extends Error {
+  status: number
+  code: string
+  requestId: string
+  retryAfter: number | null
+  constructor(status: number, code: string, message: string, requestId = '', retryAfter: number | null = null) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.requestId = requestId
+    this.retryAfter = retryAfter
+  }
+}
+
 export async function requestJSON<T>(options: RequestOptions): Promise<T> {
   const headers: Record<string, string> = { ...(options.headers ?? {}) }
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
   if (options.csrf && options.method !== 'GET') headers['X-CSRF-Token'] = options.csrf
-  const res = await fetch(options.path, {
-    method: options.method,
-    headers,
-    credentials: 'include',
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  })
+  let res: Response
+  try {
+    res = await fetch(options.path, {
+      method: options.method,
+      headers,
+      credentials: 'include',
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    })
+  } catch {
+    throw new ApiError(0, 'network', '无法连接到控制面')
+  }
   const text = await res.text()
-  const json = text ? JSON.parse(text) as { data?: T; error?: { message?: string } } : {}
-  if (!res.ok) throw new Error(json.error?.message || '请求失败')
+  let json: { data?: T; error?: { code?: string; message?: string }; request_id?: string } = {}
+  if (text) {
+    try {
+      json = JSON.parse(text)
+    } catch {
+      if (!res.ok) throw new ApiError(res.status, 'invalid_response', text.slice(0, 200) || res.statusText)
+      throw new ApiError(res.status, 'invalid_response', '响应不是 JSON')
+    }
+  }
+  if (!res.ok) {
+    const retry = Number(res.headers.get('Retry-After'))
+    throw new ApiError(res.status, json.error?.code || 'http_' + res.status, json.error?.message || res.statusText || '请求失败', json.request_id || '', Number.isFinite(retry) && retry > 0 ? retry : null)
+  }
   return json.data as T
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sllt/agentlab/internal/sandbox"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,6 +20,12 @@ import (
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "fake-agent" {
 		os.Exit(fixture.Run())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "sandbox-exec" {
+		if err := sandbox.Exec(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(126)
+		}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "runner" {
 		if err := runner.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {

@@ -17,7 +17,10 @@ type LabSettings struct {
 	GlobalLimit    int       `json:"global_limit"`
 	Retention      Retention `json:"retention"`
 	DiskQuotaBytes int64     `json:"disk_quota_bytes"`
-	UpdatedAt      string    `json:"updated_at,omitempty"`
+	// AgentWallSeconds is the default agent wall clock when a task does not set
+	// one. Zero means "use the environment or the built-in default".
+	AgentWallSeconds int    `json:"agent_wall_seconds,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
 }
 
 type Retention struct {
@@ -67,6 +70,9 @@ func (s *Service) SaveSettings(next LabSettings) (LabSettings, error) {
 	}
 	if next.DiskQuotaBytes < 0 {
 		return LabSettings{}, errors.New("quota")
+	}
+	if next.AgentWallSeconds != 0 && (next.AgentWallSeconds < minWallSeconds || next.AgentWallSeconds > maxWallSeconds) {
+		return LabSettings{}, errors.New("wall")
 	}
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	body, err := json.MarshalIndent(next, "", "  ")

@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sllt/agentlab/internal/sandbox"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sllt/agentlab/internal/agent/fixture"
 	"github.com/sllt/agentlab/internal/app"
@@ -24,6 +27,12 @@ import (
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "fake-agent" {
 		os.Exit(fixture.Run())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "sandbox-exec" {
+		if err := sandbox.Exec(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(126)
+		}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "runner" {
 		if err := runner.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
@@ -152,7 +161,7 @@ func TestHarborWebhookExportAndSSEGap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mac := Sign(secret, raw)
+	mac := Sign(secret, nowTS(), "dedupe-1", raw)
 	bad := webhook(rt, raw, "00", "dedupe-1")
 	if bad.Code != http.StatusUnauthorized {
 		t.Fatalf("bad sig %d", bad.Code)
@@ -369,12 +378,7 @@ func TestSPAFallbackDoesNotEscapeRoot(t *testing.T) {
 }
 
 func webhook(rt *bootstrap.Runtime, body []byte, sig, dedupe string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(body))
-	req.Host = "127.0.0.1"
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agentlab-Signature", sig)
-	req.Header.Set("X-Agentlab-Dedupe", dedupe)
-	rec := httptest.NewRecorder()
-	rt.Handler.ServeHTTP(rec, req)
-	return rec
+	return signedWebhook(rt, body, sig, dedupe, nowTS())
 }
+
+func nowTS() string { return strconv.FormatInt(time.Now().Unix(), 10) }

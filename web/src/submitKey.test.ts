@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import test from 'node:test'
+import { expect, test } from 'vitest'
 import { stableSubmitKey } from './submitKey.ts'
 
 test('double click reuses the key and a new visit does not', () => {
@@ -7,12 +6,12 @@ test('double click reuses the key and a new visit does not', () => {
   const first = { payload: '', key: '' }
   const key = stableSubmitKey(first, payload)
   const again = stableSubmitKey({ payload, key }, payload)
-  assert.equal(again, key)
+  expect(again).toBe(key)
   const afterSuccess = stableSubmitKey({ payload: '', key: '' }, payload)
-  assert.notEqual(afterSuccess, key)
+  expect(afterSuccess).not.toBe(key)
 })
 
 test('a changed payload gets a new key', () => {
   const key = stableSubmitKey({ payload: 'a', key: 'same' }, 'b')
-  assert.notEqual(key, 'same')
+  expect(key).not.toBe('same')
 })

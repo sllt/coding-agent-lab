@@ -1,11 +1,14 @@
-import { requestJSON } from './generated/client.ts'
+import { ApiError, requestJSON } from './generated/client.ts'
 
-export class ApiError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
+export { ApiError }
+
+type UnauthorizedHandler = () => void
+
+let onUnauthorized: UnauthorizedHandler | null = null
+
+/** setUnauthorizedHandler registers the callback that returns to login. */
+export function setUnauthorizedHandler(fn: UnauthorizedHandler | null) {
+  onUnauthorized = fn
 }
 
 export const api = {
@@ -14,46 +17,14 @@ export const api = {
     try {
       return await requestJSON<T>({ method, path, body, headers, csrf: this.csrf })
     } catch (err) {
-      if (err instanceof ApiError) throw err
-      const message = err instanceof Error ? err.message : '请求失败'
-      const status = message.includes('401') ? 401 : 0
-      throw new ApiError(status, message)
+      const e = err instanceof ApiError ? err : new ApiError(0, 'unknown', err instanceof Error ? err.message : '请求失败')
+      // A 401 on anything but the login/session probe means the session
+      // expired: drop the CSRF token and go back to the login screen.
+      if (e.status === 401 && !path.endsWith('/login') && !path.endsWith('/session') && !path.endsWith('/setup')) {
+        this.csrf = ''
+        onUnauthorized?.()
+      }
+      throw e
     }
   },
-}
-
-export const executionLabel: Record<string, string> = {
-  queued: '排队',
-  preparing: '准备',
-  running: '运行中',
-  collecting: '收集改动',
-  verifying: '独立验收',
-  completed: '已结束',
-  cancelling: '正在取消',
-  cancelled: '已取消',
-  aborted: '已中止',
-}
-
-export const verdictLabel: Record<string, string> = {
-  pass: '通过',
-  fail: '未通过',
-  inconclusive: '证据不足',
-  unverified: '未经验收',
-}
-
-export const cleanupLabel: Record<string, string> = {
-  pending: '清理中',
-  clean: '已清理',
-  failed: '清理失败',
-  quarantined: '已隔离',
-  not_started: '尚未启动',
-}
-
-export function label(table: Record<string, string>, value: string) {
-  return table[value] || value || '未知'
-}
-
-export function money(cost: number | null | undefined) {
-  if (cost === null || cost === undefined) return '未知'
-  return `${cost} microusd`
 }

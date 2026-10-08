@@ -1,130 +1,269 @@
-import { useEffect, useState } from 'react'
+import { Archive, ArrowUpCircle, Cpu, Database, FileClock, FileDown, FileUp, HardDrive, Lock, ScrollText, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Trash2, Webhook, Wrench } from 'lucide-react'
+import { useState } from 'react'
 import { api } from '../api.ts'
-import { Button, Card, Input, Notice, TextArea } from '../components/ui.tsx'
+import { PageBody, PageHeader } from '../components/layout/PageHeader.tsx'
+import { Alert, Badge, Button, Card, CardBody, CardHeader, ConfirmButton, Empty, Field, Input, KeyValue, Skeleton, Table, TBody, TD, TH, THead, TR, Tabs, TabsContent, TabsList, TabsTrigger, Textarea } from '../components/ui/index.ts'
+import { bytes, dateTime, shortId, timeAgo } from '../lib/format.ts'
+import { errorMessage, get, useAction, useAudit, useSettings } from '../lib/queries.ts'
+import { useQuery } from '@tanstack/react-query'
+import type { Settings as SettingsT } from '../lib/types.ts'
 
-type Settings = {
-  executor_default: string
-  executor_note: string
-  network_restricted: string
-  credential_display: string
-  global_limit: number
-  disk_quota_bytes: number
-  release_rss: string
-  process_rss_bytes: number
-  process_rss_note: string
-  retention: { log_days: number; patch_days: number; report_days: number }
-}
-type Audit = { id: string; action: string; resource_id: string; at: string; detail_json: string }
+type RetentionPlan = { log_files: string[] | null; report_files: string[] | null; kept_patches: string[] | null; irreversible: string; apply: boolean }
+type Upgrade = { product: string; version: string; migrations: string[] | null; backup_required: boolean; down_migration: boolean; auto_cli_update: boolean; note: string }
 
 export function Settings() {
-  const [settings, setSettings] = useState<Settings | null>(null)
-  const [failed, setFailed] = useState(false)
-  const [harbor, setHarbor] = useState('{"schema_version":"harbor.subset/v1","name":"示例","instruction":"说明任务","environment":{"image":"未映射"}}')
-  const [result, setResult] = useState('')
-  const [error, setError] = useState('')
-  const [audit, setAudit] = useState<Audit[]>([])
-  const [limit, setLimit] = useState('1')
-  const [logDays, setLogDays] = useState('30')
-  const [patchDays, setPatchDays] = useState('0')
-  const [reportDays, setReportDays] = useState('365')
-  const [quota, setQuota] = useState('0')
-
-  function applySettings(data: Settings) {
-    setSettings(data)
-    setFailed(false)
-    setLimit(String(data.global_limit || 1))
-    setLogDays(String(data.retention?.log_days ?? 30))
-    setPatchDays(String(data.retention?.patch_days ?? 0))
-    setReportDays(String(data.retention?.report_days ?? 365))
-    setQuota(String(data.disk_quota_bytes || 0))
-  }
-
-  useEffect(() => {
-    api.request<Settings>('GET', '/api/v1/settings').then(applySettings).catch((err: Error) => { setError(err.message); setFailed(true) })
-  }, [])
-
-  function mapHarbor() {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(harbor)
-    } catch {
-      setResult('')
-      setError('Harbor 文本不是合法 JSON。')
-      return
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      setResult('')
-      setError('Harbor 文本必须是一个 JSON 对象。')
-      return
-    }
-    setError('')
-    void api.request('POST', '/api/v1/imports/harbor', parsed).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))
-  }
-
-  function savePolicy() {
-    setError('')
-    void api.request<Settings>('PATCH', '/api/v1/settings', {
-      global_limit: Number(limit),
-      disk_quota_bytes: Number(quota),
-      retention: { log_days: Number(logDays), patch_days: Number(patchDays), report_days: Number(reportDays) },
-    }).then((data) => { applySettings(data); setResult('已保存并发、保留和磁盘配额。补丁天数 0 表示不按时间删除补丁。') }).catch((err: Error) => setError(err.message))
-  }
-
+  const settings = useSettings()
+  const [tab, setTab] = useState('policy')
+  const s = settings.data
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-2xl">设置</h1>
-      {error ? <Notice tone="warn">{error}</Notice> : null}
-      {failed ? <Notice tone="warn">设置没有读到。这不是一份空配置。</Notice> : settings ? (
-        <Card title="执行与凭据">
-          <p className="text-sm">默认执行器 {settings.executor_default}。{settings.executor_note}</p>
-          <p className="mt-2 text-sm">网络限制：{settings.network_restricted}。{settings.credential_display}。</p>
-          <p className="mt-2 text-sm">发布用峰值 RSS：{settings.release_rss}。{settings.process_rss_note} 当前进程约 {settings.process_rss_bytes} 字节。</p>
-        </Card>
-      ) : <Notice>正在读取设置。</Notice>}
-      <Card title="并发、保留和配额">
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="text-sm">全局并发（1–8）<Input value={limit} onChange={(e) => setLimit(e.target.value)} /></label>
-          <label className="text-sm">磁盘配额字节，0 表示不设水位<Input value={quota} onChange={(e) => setQuota(e.target.value)} /></label>
-          <label className="text-sm">日志保留天数<Input value={logDays} onChange={(e) => setLogDays(e.target.value)} /></label>
-          <label className="text-sm">补丁保留天数，0 为不删<Input value={patchDays} onChange={(e) => setPatchDays(e.target.value)} /></label>
-          <label className="text-sm">报告保留天数<Input value={reportDays} onChange={(e) => setReportDays(e.target.value)} /></label>
-        </div>
-        <Button className="mt-3" onClick={savePolicy}>保存策略</Button>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button tone="quiet" onClick={() => void api.request('POST', '/api/v1/maintenance/retention', { apply: false }).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))}>预览保留清理</Button>
-          <Button tone="quiet" onClick={() => void api.request('POST', '/api/v1/maintenance/retention', { apply: true }).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))}>按策略删除过期日志和报告</Button>
-        </div>
-        <p className="mt-2 text-sm">删除前先看预览。原始日志和过期报告删了不能从这里恢复。被留下的补丁和检查摘要还在。</p>
+    <>
+      <PageHeader title="系统" description="并发与保留策略、维护操作、安全边界与审计记录。破坏性操作都需要二次确认。" />
+      <PageBody className="space-y-4">
+        {settings.error ? <Alert tone="danger" title="设置没有读到">这不是一份空配置：{errorMessage(settings.error)}</Alert> : null}
+        {s?.maintenance ? (
+          <Alert tone="warning" title="维护模式">新的 Trial 不会被调度。{(s.maintenance_reasons ?? []).join('；')}{s.store_error ? ` · ${s.store_error}` : ''}</Alert>
+        ) : null}
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList className="mb-4">
+            <TabsTrigger value="policy"><SlidersHorizontal />策略</TabsTrigger>
+            <TabsTrigger value="maintenance"><Wrench />维护</TabsTrigger>
+            <TabsTrigger value="security"><Shield />安全</TabsTrigger>
+            <TabsTrigger value="audit"><ScrollText />审计</TabsTrigger>
+            <TabsTrigger value="harbor"><FileUp />Harbor</TabsTrigger>
+            <TabsTrigger value="upgrade"><ArrowUpCircle />版本</TabsTrigger>
+          </TabsList>
+          <TabsContent value="policy">{s ? <Policy s={s} /> : <Skeleton className="h-80 rounded-xl" />}</TabsContent>
+          <TabsContent value="maintenance"><Maintenance /></TabsContent>
+          <TabsContent value="security">{s ? <Security s={s} /> : <Skeleton className="h-80 rounded-xl" />}</TabsContent>
+          <TabsContent value="audit"><Audit enabled={tab === 'audit'} /></TabsContent>
+          <TabsContent value="harbor"><Harbor /></TabsContent>
+          <TabsContent value="upgrade"><UpgradeInfo enabled={tab === 'upgrade'} s={s} /></TabsContent>
+        </Tabs>
+      </PageBody>
+    </>
+  )
+}
+
+function Policy({ s }: { s: SettingsT }) {
+  const [limit, setLimit] = useState(String(s.global_limit))
+  const [wall, setWall] = useState(s.agent_wall_seconds ? String(s.agent_wall_seconds) : '')
+  const [quotaGB, setQuotaGB] = useState(s.disk_quota_bytes ? String(+(s.disk_quota_bytes / 1024 ** 3).toFixed(2)) : '')
+  const [logDays, setLogDays] = useState(String(s.retention.log_days))
+  const [patchDays, setPatchDays] = useState(String(s.retention.patch_days))
+  const [reportDays, setReportDays] = useState(String(s.retention.report_days))
+  const lim = Number(limit)
+  const limitErr = !Number.isInteger(lim) || lim < 1 || lim > 8 ? '1 到 8 之间的整数' : ''
+  const nonNeg = (v: string) => v === '' || (Number.isFinite(Number(v)) && Number(v) >= 0)
+  const valid = !limitErr && [wall, quotaGB, logDays, patchDays, reportDays].every(nonNeg)
+  const save = useAction(() => api.request('PATCH', '/api/v1/settings', {
+    global_limit: lim,
+    agent_wall_seconds: wall ? Math.floor(Number(wall)) : 0,
+    disk_quota_bytes: quotaGB ? Math.round(Number(quotaGB) * 1024 ** 3) : 0,
+    retention: { log_days: Number(logDays) || 0, patch_days: Number(patchDays) || 0, report_days: Number(reportDays) || 0 },
+  }), { success: '策略已保存', invalidate: [['settings']] })
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Card>
+        <CardHeader title="调度" icon={<Cpu />} />
+        <CardBody className="grid gap-4 sm:grid-cols-2">
+          <Field label="全局并发" error={limitErr || undefined} hint="大于 1 时，不同账号的 Trial 会重叠运行；同一账号仍受自身并发约束。">
+            <Input type="number" min={1} max={8} value={limit} onChange={(e) => setLimit(e.target.value)} />
+          </Field>
+          <Field label="默认 Agent 墙钟（秒）" optional hint="任务与配置都没设上限时使用。留空 = 环境变量或内置默认值。">
+            <Input type="number" min={0} value={wall} onChange={(e) => setWall(e.target.value)} />
+          </Field>
+        </CardBody>
       </Card>
-      <Card title="隔离清理">
-        <Button onClick={() => void api.request('POST', '/api/v1/maintenance/quarantine', {}).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))}>清理隔离工作区</Button>
-        <p className="mt-2 text-sm">只删除 runner 标成隔离的工作区副本。补丁、事件和检查摘要留下。不会合并到源目录。</p>
+      <Card>
+        <CardHeader title="保留与配额" icon={<HardDrive />} />
+        <CardBody className="grid gap-4 sm:grid-cols-2">
+          <Field label="原始日志保留（天）"><Input type="number" min={0} value={logDays} onChange={(e) => setLogDays(e.target.value)} /></Field>
+          <Field label="报告保留（天）"><Input type="number" min={0} value={reportDays} onChange={(e) => setReportDays(e.target.value)} /></Field>
+          <Field label="补丁保留（天）" hint="0 表示不按时间删除补丁。"><Input type="number" min={0} value={patchDays} onChange={(e) => setPatchDays(e.target.value)} /></Field>
+          <Field label="磁盘配额（GB）" optional hint="留空 / 0 表示不设水位。"><Input type="number" min={0} step="0.5" value={quotaGB} onChange={(e) => setQuotaGB(e.target.value)} /></Field>
+        </CardBody>
       </Card>
-      <Card title="审计">
-        <Button tone="quiet" onClick={() => void api.request<{ items: Audit[] | null }>('GET', '/api/v1/audit').then((data) => setAudit(data.items || [])).catch((err: Error) => setError(err.message))}>读取审计</Button>
-        {audit.length === 0 ? <p className="mt-2 text-sm">还没有展开审计列表。点上面的按钮读取，空结果会写在这里，不会和读取失败混在一起。</p> : (
-          <ul className="mt-2 flex flex-col gap-1 text-xs">
-            {audit.map((item) => <li key={item.id}>{item.at} · {item.action} · {item.resource_id}</li>)}
-          </ul>
-        )}
-      </Card>
-      <Card title="升级">
-        <Button tone="quiet" onClick={() => void api.request('GET', '/api/v1/upgrade').then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))}>查看升级路径</Button>
-        <p className="mt-2 text-sm">升级前要先备份。没有向下迁移，也不会顺便更新三个 CLI。</p>
-      </Card>
-      <Card title="备份">
-        <Button onClick={() => void api.request<{ path: string; note: string }>('POST', '/api/v1/maintenance/backup').then((data) => setResult(`${data.note} ${data.path}`)).catch((err: Error) => setError(err.message))}>生成一致性备份</Button>
-        <p className="mt-2 text-sm">仍有未结束的 Attempt 时不会生成备份。</p>
-      </Card>
-      <Card title="Harbor 子集">
-        <TextArea rows={6} value={harbor} onChange={(e) => setHarbor(e.target.value)} />
-        <div className="mt-2 flex flex-wrap gap-2">
-          <Button onClick={mapHarbor}>查看映射</Button>
-          <Button tone="quiet" onClick={() => void api.request('POST', '/api/v1/exports/harbor', { name: '示例', prompt: '说明任务' }).then((data) => setResult(JSON.stringify(data, null, 2))).catch((err: Error) => setError(err.message))}>导出子集</Button>
-        </div>
-        <p className="mt-2 text-sm">未映射字段会列出来。这里不会自动合并代码，也不会把子集收成已发布任务。</p>
-      </Card>
-      {result ? <pre className="overflow-x-auto whitespace-pre-wrap text-xs">{result}</pre> : null}
+      <div className="flex items-center justify-end gap-3 xl:col-span-2">
+        <span className="text-xs text-muted-foreground">保存会写入审计日志。</span>
+        <Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>保存策略</Button>
+      </div>
     </div>
+  )
+}
+
+function Maintenance() {
+  const [plan, setPlan] = useState<RetentionPlan | null>(null)
+  const [backupPath, setBackupPath] = useState('')
+  const [quarantine, setQuarantine] = useState<{ removed: string[] | null; kept_evidence: string[] | null; note: string } | null>(null)
+  const backup = useAction(() => api.request<{ path: string; note: string }>('POST', '/api/v1/maintenance/backup'), { success: (d) => d.note, onSuccess: (d) => setBackupPath(d.path) })
+  const preview = useAction(() => api.request<RetentionPlan>('POST', '/api/v1/maintenance/retention', { apply: false }), { onSuccess: setPlan })
+  const apply = useAction(() => api.request<RetentionPlan>('POST', '/api/v1/maintenance/retention', { apply: true }), { success: '已按策略删除过期文件', onSuccess: setPlan, invalidate: [['audit']] })
+  const clean = useAction(() => api.request<{ removed: string[] | null; kept_evidence: string[] | null; note: string }>('POST', '/api/v1/maintenance/quarantine', {}), { success: '已清理隔离工作区', onSuccess: setQuarantine })
+  const deletable = (plan?.log_files?.length ?? 0) + (plan?.report_files?.length ?? 0)
+  return (
+    <div className="grid gap-4 xl:grid-cols-3">
+      <Card className="flex flex-col">
+        <CardHeader title="一致性备份" icon={<Archive />} />
+        <CardBody className="flex-1 space-y-3 text-[13px] text-muted-foreground">
+          <p>在所有活跃 Attempt 结束后生成 SQLite 在线备份。仍有运行中的任务时会拒绝，而不是生成半截备份。</p>
+          {backupPath ? <Alert tone="success">已写入 <code className="font-mono text-xs">{backupPath}</code></Alert> : null}
+        </CardBody>
+        <div className="border-t px-5 py-3"><ConfirmButton icon={<Database />} title="生成一致性备份？" description="期间会短暂进入维护状态，新的 Trial 暂不调度；备份结束后自动恢复。" confirmLabel="开始备份" onConfirm={() => backup.mutateAsync(undefined)}>生成备份</ConfirmButton></div>
+      </Card>
+      <Card className="flex flex-col">
+        <CardHeader title="保留清理" icon={<FileClock />} />
+        <CardBody className="flex-1 space-y-3 text-[13px]">
+          <p className="text-muted-foreground">先预览，再删除。被报告引用的补丁和检查摘要会保留。</p>
+          {plan ? (
+            <div className="space-y-2 rounded-lg border p-3 text-xs">
+              <div className="flex flex-wrap gap-2">
+                <Badge tone={plan.log_files?.length ? 'warning' : 'neutral'}>日志 {plan.log_files?.length ?? 0}</Badge>
+                <Badge tone={plan.report_files?.length ? 'warning' : 'neutral'}>报告 {plan.report_files?.length ?? 0}</Badge>
+                <Badge tone="success">保留补丁 {plan.kept_patches?.length ?? 0}</Badge>
+                {plan.apply ? <Badge tone="danger">已执行</Badge> : <Badge tone="outline">预览</Badge>}
+              </div>
+              {[...(plan.log_files ?? []), ...(plan.report_files ?? [])].slice(0, 6).map((f) => <p key={f} className="truncate font-mono text-[11px] text-muted-foreground">{f}</p>)}
+              {deletable > 6 ? <p className="text-muted-foreground">…还有 {deletable - 6} 个</p> : null}
+              <p className="text-muted-foreground">{plan.irreversible}</p>
+            </div>
+          ) : null}
+        </CardBody>
+        <div className="flex gap-2 border-t px-5 py-3">
+          <Button size="sm" variant="outline" loading={preview.isPending} onClick={() => preview.mutate(undefined)}>预览</Button>
+          <ConfirmButton danger variant="danger-outline" icon={<Trash2 />} disabled={!plan || plan.apply || deletable === 0} typeToConfirm="删除" title={`删除 ${deletable} 个过期文件？`} description={plan?.irreversible ?? ''} confirmLabel="永久删除" onConfirm={() => apply.mutateAsync(undefined)}>按策略删除</ConfirmButton>
+        </div>
+      </Card>
+      <Card className="flex flex-col">
+        <CardHeader title="隔离工作区" icon={<ShieldAlert />} />
+        <CardBody className="flex-1 space-y-3 text-[13px] text-muted-foreground">
+          <p>清理被标记为隔离的 Attempt 的工作区副本。补丁、事件和检查摘要不受影响，结论也不会改变。</p>
+          {quarantine ? <Alert tone="success">已删除 {quarantine.removed?.length ?? 0} 个工作区，保留证据 {quarantine.kept_evidence?.length ?? 0} 项。</Alert> : null}
+        </CardBody>
+        <div className="border-t px-5 py-3"><ConfirmButton danger variant="danger-outline" icon={<Trash2 />} typeToConfirm="清理" title="清理隔离工作区？" description="工作区里没被收成制品的文件不能恢复。这不会把结论改成通过，也不会合并到源目录。" confirmLabel="清理" onConfirm={() => clean.mutateAsync(undefined)}>清理隔离区</ConfirmButton></div>
+      </Card>
+    </div>
+  )
+}
+
+function Security({ s }: { s: SettingsT }) {
+  const sb = s.sandbox
+  const sbTone = sb.disabled ? 'warning' : sb.supported ? 'success' : 'danger'
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Card>
+        <CardHeader title="文件系统沙箱" icon={sb.supported && !sb.disabled ? <ShieldCheck className="text-success" /> : <ShieldAlert className="text-warning" />} actions={<Badge tone={sbTone}>{sb.disabled ? '已手动关闭' : sb.supported ? `Landlock ABI ${sb.abi}` : '不可用'}</Badge>} />
+        <CardBody className="space-y-3 text-[13px]">
+          <p className="text-muted-foreground">真实适配器在 Landlock 下运行：只能写本次工作区、临时 HOME 与 /tmp，读不到控制面数据目录（数据库、其他 Attempt、webhook 密钥）。内核不支持 Landlock 时照常运行并记录 mode=none；已请求沙箱但应用失败时，Agent 不会启动（fail closed）。</p>
+          {sb.reason ? <p className="text-xs text-muted-foreground">{sb.reason}</p> : null}
+          {sb.disabled ? <Alert tone="warning">AGENTLAB_SANDBOX=off：真实 Agent 将以无沙箱的本机进程运行，每次 Attempt 都会记录这一点。</Alert> : null}
+          <Alert tone="neutral">Landlock 只限制文件系统。网络与进程隔离尚未实现；restricted / offline 网络的配置会被拒绝发布。</Alert>
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader title="控制面" icon={<Lock />} />
+        <CardBody>
+          <KeyValue items={[
+            { label: '默认执行器', value: <span className="font-mono text-xs">{s.executor_default}</span> },
+            { label: '执行器规则', value: <span className="text-xs text-muted-foreground">{s.executor_note}</span> },
+            { label: '网络限制', value: <Badge tone="warning">{s.network_restricted}</Badge> },
+            { label: '凭据', value: s.credential_display },
+            { label: 'Webhook', value: s.webhook_configured ? <Badge tone="success"><Webhook />已配置签名密钥</Badge> : <Badge tone="neutral">未配置</Badge> },
+            { label: '维护模式', value: s.maintenance ? <Badge tone="warning">开启</Badge> : <Badge tone="success">关闭</Badge> },
+            { label: '进程内存', value: <span className="text-xs">{bytes(s.process_rss_bytes)} <span className="text-muted-foreground">· {s.process_rss_note}</span></span> },
+          ]} />
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function Audit({ enabled }: { enabled: boolean }) {
+  const audit = useAudit(enabled)
+  const items = audit.data ?? []
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader title="审计日志" description="最近 100 条" actions={<Button size="xs" variant="ghost" loading={audit.isFetching} onClick={() => void audit.refetch()}>刷新</Button>} />
+      {audit.isLoading ? <div className="space-y-2 p-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-8" />)}</div> : items.length === 0 ? <Empty icon={<ScrollText />} title="还没有审计记录" /> : (
+        <Table>
+          <THead><TR><TH>时间</TH><TH>操作</TH><TH>对象</TH><TH className="hidden md:table-cell">操作者</TH></TR></THead>
+          <TBody>
+            {items.map((a) => (
+              <TR key={a.id}>
+                <TD className="whitespace-nowrap text-xs text-muted-foreground" title={dateTime(a.at)}>{timeAgo(a.at)}</TD>
+                <TD><Badge tone={a.action.includes('apply') || a.action.includes('model_call') ? 'warning' : 'neutral'} className="font-mono">{a.action}</Badge></TD>
+                <TD className="font-mono text-xs">{shortId(a.resource_id, 18)}</TD>
+                <TD className="hidden text-xs text-muted-foreground md:table-cell">{a.actor_id}</TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
+      )}
+    </Card>
+  )
+}
+
+function Harbor() {
+  const [text, setText] = useState('')
+  const [result, setResult] = useState('')
+  const [name, setName] = useState('')
+  const [prompt, setPrompt] = useState('')
+  let parsed: unknown = null
+  let parseErr = ''
+  if (text.trim()) {
+    try { parsed = JSON.parse(text) } catch { parseErr = '不是合法的 JSON' }
+    if (!parseErr && (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))) parseErr = '必须是一个 JSON 对象'
+  }
+  const imp = useAction(() => api.request('POST', '/api/v1/imports/harbor', parsed), { success: '已解析 Harbor 子集', onSuccess: (d) => setResult(JSON.stringify(d, null, 2)) })
+  const exp = useAction(() => api.request('POST', '/api/v1/exports/harbor', { name: name.trim(), prompt }), { success: '已生成 Harbor 子集', onSuccess: (d) => setResult(JSON.stringify(d, null, 2)) })
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Card>
+        <CardHeader title="导入" icon={<FileUp />} description="只解析受支持的 Harbor 子集，不会执行其中的脚本。" />
+        <CardBody className="space-y-3">
+          <Field label="Harbor JSON" error={parseErr || undefined}><Textarea rows={8} className="font-mono text-xs" value={text} onChange={(e) => setText(e.target.value)} placeholder='{"name": "...", "instruction": "..."}' /></Field>
+          <Button size="sm" disabled={!text.trim() || !!parseErr} loading={imp.isPending} onClick={() => imp.mutate(undefined)}>解析</Button>
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader title="导出" icon={<FileDown />} />
+        <CardBody className="space-y-3">
+          <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="提示词"><Textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} /></Field>
+          <Button size="sm" disabled={!name.trim() || !prompt.trim()} loading={exp.isPending} onClick={() => exp.mutate(undefined)}>导出</Button>
+        </CardBody>
+      </Card>
+      {result ? (
+        <Card className="xl:col-span-2">
+          <CardHeader title="结果" />
+          <pre className="max-h-96 overflow-auto p-5 font-mono text-xs scrollbar-thin">{result}</pre>
+        </Card>
+      ) : null}
+    </div>
+  )
+}
+
+function UpgradeInfo({ enabled, s }: { enabled: boolean; s?: SettingsT }) {
+  const q = useQuery({ queryKey: ['upgrade'], queryFn: get<Upgrade>('/api/v1/upgrade'), enabled })
+  const u = q.data
+  void s
+  return (
+    <Card>
+      <CardHeader title="版本与迁移" icon={<ArrowUpCircle />} />
+      <CardBody className="space-y-4">
+        {q.isLoading || !u ? <Skeleton className="h-24" /> : (
+          <>
+            <KeyValue items={[
+              { label: '产品', value: u.product },
+              { label: '版本', value: <span className="font-mono text-xs">{u.version}</span> },
+              { label: '已应用迁移', value: <div className="flex flex-wrap gap-1">{(u.migrations ?? []).map((m) => <Badge key={m} tone="neutral" className="font-mono">{m}</Badge>)}</div> },
+              { label: '升级前备份', value: u.backup_required ? '必需' : '可选' },
+              { label: '向下迁移', value: u.down_migration ? '支持' : '不支持' },
+              { label: '自动更新 CLI', value: u.auto_cli_update ? '是' : '否' },
+            ]} />
+            <Alert tone="info">{u.note}</Alert>
+          </>
+        )}
+      </CardBody>
+    </Card>
   )
 }

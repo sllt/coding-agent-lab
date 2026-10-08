@@ -5,6 +5,10 @@ info:
   description: |
     本机控制面。成功响应是 {data, request_id}。错误响应是 {error:{code,message}, request_id}。
     未知费用是 null，不是 0。取消返回 202，只表示意图已记录。
+    所有字段都是 snake_case。存成 JSON 文本的列（source_spec、draft、snapshot、precheck、doctor、
+    protocol、plan、runtime）以嵌套对象返回。凭据值、attempt token、runtime.identity_token、
+    precheck 原始日志和服务器绝对路径不会出现在响应里。
+    未归类的服务端错误返回 500（code=internal），详情只写服务日志。
 servers:
   - url: http://127.0.0.1:43117
 paths:
@@ -42,6 +46,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Envelope'
+        '401':
+          description: 用户名或密码不正确
+        '429':
+          description: 同一用户名 15 分钟内失败 5 次后锁定（1 分钟起，最多 30 分钟），带 Retry-After 头
   /api/v1/logout:
     post:
       operationId: logout
@@ -151,7 +159,7 @@ paths:
       summary: 配置草稿
       responses:
         '200':
-          description: 配置列表
+          description: 配置列表；latest 按 profile_id 给出最新已发布版本和 doctor 就绪度
     post:
       operationId: createProfile
       summary: 创建配置草稿
@@ -230,7 +238,7 @@ paths:
         - $ref: '#/components/parameters/Id'
       responses:
         '200':
-          description: 实验
+          description: 实验；labels 给出所用任务版本和配置版本的名称，便于画任务 × 配置矩阵
   /api/v1/experiments/{id}/export:
     post:
       operationId: exportExperiment
@@ -354,6 +362,13 @@ paths:
       responses:
         '200':
           description: 对比表
+  /api/v1/catalog:
+    get:
+      operationId: catalog
+      summary: 已发布的任务版本和配置版本（含 doctor 就绪度），用于创建实验
+      responses:
+        '200':
+          description: tasks 和 profiles 两个列表
   /api/v1/settings:
     get:
       operationId: settings
@@ -418,7 +433,9 @@ paths:
       summary: 维护模式备份
       responses:
         '200':
-          description: 备份路径
+          description: 备份路径（$DATA/backups/...，不含服务器绝对路径）
+        '409':
+          description: 已有备份在进行（code=busy），或仍有未结束的 Attempt
   /api/v1/exports/harbor:
     post:
       operationId: exportHarbor
@@ -479,9 +496,34 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/WebhookBody'
+      parameters:
+        - name: X-Agentlab-Timestamp
+          in: header
+          required: true
+          description: Unix 秒。与服务器时间相差超过 5 分钟的请求被拒绝。
+          schema:
+            type: string
+        - name: X-Agentlab-Dedupe
+          in: header
+          required: true
+          description: 去重键，最长 200 字符，参与签名。
+          schema:
+            type: string
+        - name: X-Agentlab-Signature
+          in: header
+          required: true
+          description: hex(HMAC-SHA256(secret, timestamp + "\n" + dedupe + "\n" + body))，可带 v1= 前缀。
+          schema:
+            type: string
       responses:
         '200':
           description: 已接受
+        '401':
+          description: 签名错误、缺时间戳或时间戳过期（code=stale）
+        '409':
+          description: 同一去重键对应了不同正文
+        '422':
+          description: notify_url 不是带端口的 http 本机地址
   /api/v1/accounts:
     get:
       operationId: listAccounts
@@ -520,6 +562,8 @@ paths:
       responses:
         '201':
           description: 已发布
+        '422':
+          description: network 不是 unrestricted（restricted/offline 尚未强制执行）
 components:
   parameters:
     Id:
@@ -601,10 +645,13 @@ components:
           type: string
     TaskPatch:
       type: object
-      required: [name, draft_json, row_version]
+      required: [row_version]
+      description: 传 draft（对象，和 GET 返回的形状一致）或 draft_json（字符串，兼容旧客户端）之一。
       properties:
         name:
           type: string
+        draft:
+          type: object
         draft_json:
           type: string
         row_version:
@@ -630,6 +677,18 @@ components:
           type: string
         approve_tools:
           type: boolean
+        credential_env:
+          type: array
+          description: 转发给 Agent 的环境变量名（只存名字，不存值）。PATH、HOME、LD_* 等会被拒绝。
+          items:
+            type: string
+        inherit_home:
+          type: boolean
+          description: 让 Agent 使用真实 HOME（读取 CLI 登录态）。默认 false。
+        wall_seconds:
+          type: integer
+          minimum: 5
+          maximum: 86400
     ProfileDraft:
       type: object
       required: [name, account_id, profile]
@@ -649,6 +708,13 @@ components:
       type: object
       required: [task_version_ids, profile_version_ids, repetitions]
       properties:
+        name:
+          type: string
+          maxLength: 120
+          description: 展示用名称，不进入计划摘要。
+        description:
+          type: string
+          maxLength: 2000
         mode:
           type: string
         task_version_ids:
@@ -717,6 +783,8 @@ components:
           type: string
         network:
           type: string
+          enum: [unrestricted]
+          description: restricted / offline 尚未强制执行，提交返回 422。
     SettingsPatch:
       type: object
       required: [global_limit, retention, disk_quota_bytes]
@@ -728,6 +796,11 @@ components:
         disk_quota_bytes:
           type: integer
           minimum: 0
+        agent_wall_seconds:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: Agent 墙钟上限；0 表示用环境变量或默认 1800 秒。
         retention:
           type: object
           properties:

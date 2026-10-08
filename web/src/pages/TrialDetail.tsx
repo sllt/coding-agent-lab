@@ -1,238 +1,336 @@
-import { useEffect, useState } from 'react'
+import { Ban, Box, Clock, FileDiff, GitPullRequestArrow, MessageSquareText, RotateCcw, ShieldCheck, ShieldOff, TerminalSquare } from 'lucide-react'
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, cleanupLabel, executionLabel, label, money, verdictLabel } from '../api.ts'
-import { Button, Card, Input, Notice, TextArea } from '../components/ui.tsx'
-
-type Trial = { ID: string; ExecutionState: string; Verdict: string; TaskVersionID: string; ProfileVersionID: string }
-type Attempt = { ID: string; Number: number; State: string; Verdict: string; CleanupState: string; Reason: string; CreatedAt: string; RuntimeJSON?: string }
-type Usage = { cost_microusd: number | null; confidence: string; note: string; input_tokens: number | null; output_tokens: number | null }
-type Artifact = { id: string; kind: string; status: string; bytes: number }
+import { api } from '../api.ts'
+import { PageBody, PageHeader } from '../components/layout/PageHeader.tsx'
+import { StateBadge, VerdictBadge } from '../components/status.tsx'
+import { ChecksView } from '../components/trial/ChecksView.tsx'
+import { EventStream } from '../components/trial/EventStream.tsx'
+import { PatchView } from '../components/trial/PatchView.tsx'
+import { Alert, Badge, Button, Card, CardBody, CardHeader, ConfirmButton, CopyText, Dialog, DialogContent, DialogTrigger, Empty, Field, KeyValue, Skeleton, Switch, Tabs, TabsContent, TabsList, TabsTrigger, Textarea, Tooltip } from '../components/ui/index.ts'
+import { cn } from '../lib/cn.ts'
+import { bytes, dateTime, duration, num, shortId, timeAgo } from '../lib/format.ts'
+import { errorMessage, useAction, useAttemptArtifacts, useAttemptChecks, useAttemptReviews, useAttemptUsage, useExperiment, useTrial } from '../lib/queries.ts'
+import { adapterLabel, cleanupLabel, execLabel, lookup, terminalStates } from '../lib/status.ts'
+import { useEventLog } from '../lib/useEventLog.ts'
+import type { Attempt, Runtime, Trial } from '../lib/types.ts'
 
 export function TrialDetail() {
   const { id = '' } = useParams()
-  const [trial, setTrial] = useState<Trial | null>(null)
-  const [attempts, setAttempts] = useState<Attempt[]>([])
-  const [checks, setChecks] = useState<string[]>([])
-  const [events, setEvents] = useState('还没有事件。')
-  const [usage, setUsage] = useState<Usage | null>(null)
-  const [artifacts, setArtifacts] = useState<Artifact[]>([])
-  const [patch, setPatch] = useState('')
-  const [reviews, setReviews] = useState<string[]>([])
-  const [review, setReview] = useState('')
-  const [blind, setBlind] = useState(true)
-  const [showAllEvents, setShowAllEvents] = useState(false)
+  const { data, isLoading, error } = useTrial(id)
+  const [pick, setPick] = useState<{ trial: string; attempt: string }>({ trial: '', attempt: '' })
+  const picked = pick.trial === id ? pick.attempt : ''
+  const setPicked = (attempt: string) => setPick({ trial: id, attempt })
+  const attempts = data?.attempts ?? []
+  const current = attempts.find((a) => a.id === picked) ?? attempts[attempts.length - 1]
+  const live = !!current && !terminalStates.has(current.state)
+  const { log, loading: logLoading } = useEventLog(current?.id, live)
+  const checks = useAttemptChecks(current?.id)
+  const artifacts = useAttemptArtifacts(current?.id)
+  const exp = useExperiment(data?.trial.experiment_id ?? '')
+
+  if (isLoading) return <PageBody className="space-y-4"><Skeleton className="h-16" /><div className="grid gap-4 xl:grid-cols-[260px_1fr_320px]"><Skeleton className="h-96" /><Skeleton className="h-96" /><Skeleton className="h-96" /></div></PageBody>
+  if (error || !data) return <PageBody><Alert tone="danger" title="无法读取 Trial">{errorMessage(error)}</Alert></PageBody>
+
+  const trial = data.trial
+  const task = exp.data?.labels?.tasks?.[trial.task_version_id]
+  const prof = exp.data?.labels?.profiles?.[trial.profile_version_id]
+  const expName = exp.data?.experiment.name || `实验 ${shortId(trial.experiment_id)}`
+  const checkItems = checks.data?.items ?? []
+  const arts = artifacts.data ?? []
+
+  return (
+    <>
+      <PageHeader
+        crumbs={[{ to: '/experiments', label: '实验' }, { to: `/experiments/${trial.experiment_id}`, label: expName }, { label: `Trial ${shortId(trial.id)}` }]}
+        title={<span className="flex flex-wrap items-center gap-2.5">{task ? task.task_name : '运行详情'}<span className="font-normal text-muted-foreground">×</span>{prof ? prof.display_name || prof.name : shortId(trial.profile_version_id)}<StateBadge state={trial.execution_state} />{trial.execution_state === 'completed' ? <VerdictBadge verdict={trial.verdict} /> : null}</span>}
+        meta={(
+          <>
+            <CopyText value={trial.id} />
+            <span>第 {trial.repeat_index} 次重复</span>
+            <span title={dateTime(trial.queued_at)}>入队 {timeAgo(trial.queued_at)}</span>
+            {trial.cancel_requested && !terminalStates.has(trial.execution_state) ? <Badge tone="warning">已请求取消</Badge> : null}
+          </>
+        )}
+        actions={<TrialActions trial={trial} />}
+      />
+      <PageBody className="max-w-[1600px]">
+        <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)_330px]">
+          {/* Left: attempts + identity */}
+          <div className="space-y-4">
+            <Card>
+              <CardHeader title="Attempts" description={attempts.length > 1 ? '第一次的结论单独保留，进入首轮通过率' : undefined} />
+              {attempts.length === 0 ? <Empty className="py-8" title="还没有 Attempt" description="调度器占位后才会创建。" /> : (
+                <ul className="p-2">
+                  {attempts.map((a) => (
+                    <li key={a.id}>
+                      <button type="button" onClick={() => setPicked(a.id)} className={cn('w-full rounded-md px-3 py-2 text-left transition-colors', a.id === current?.id ? 'bg-primary-soft ring-1 ring-primary/25' : 'hover:bg-accent')}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[13px] font-medium">第 {a.number} 次{a.number === 1 ? <span className="ml-1 text-[11px] font-normal text-muted-foreground">首轮</span> : null}</span>
+                          {a.state === 'completed' ? <VerdictBadge verdict={a.verdict} /> : <StateBadge state={a.state} />}
+                        </div>
+                        <p className="mt-1 text-[11px] text-muted-foreground">{timeAgo(a.created_at)} · {lookup(cleanupLabel, a.cleanup_state, '—')}</p>
+                        {a.reason ? <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{a.reason}</p> : null}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+            <Card>
+              <CardHeader title="冻结版本" />
+              <CardBody>
+                <KeyValue items={[
+                  { label: '任务', value: task ? <span>{task.task_name} <span className="text-muted-foreground">v{task.version}</span></span> : <CopyText value={trial.task_version_id} display={shortId(trial.task_version_id, 12)} /> },
+                  { label: '项目', value: task?.project_name ?? '—' },
+                  { label: 'Agent', value: prof ? <span>{prof.display_name || prof.name} <span className="text-muted-foreground">v{prof.version}</span></span> : <CopyText value={trial.profile_version_id} display={shortId(trial.profile_version_id, 12)} /> },
+                  { label: '适配器', value: prof ? lookup(adapterLabel, prof.adapter) : '—' },
+                  { label: '模型', value: prof?.model || '—', mono: true },
+                ]} />
+              </CardBody>
+            </Card>
+          </div>
+
+          {/* Center: evidence */}
+          <Card className="flex min-h-[560px] flex-col overflow-hidden xl:h-[calc(100vh-220px)]">
+            <Tabs defaultValue="events" className="flex min-h-0 flex-1 flex-col">
+              <div className="border-b px-3 pt-1">
+                <TabsList className="w-full border-b-0">
+                  <TabsTrigger value="events"><TerminalSquare />事件{live ? <span className="ml-1 size-1.5 animate-pulse-soft rounded-full bg-info" /> : <span className="ml-1 text-muted-foreground tabular">{log.events.length}</span>}</TabsTrigger>
+                  <TabsTrigger value="diff"><FileDiff />改动</TabsTrigger>
+                  <TabsTrigger value="checks"><ShieldCheck />独立验收<span className="ml-1 text-muted-foreground tabular">{checkItems.length}</span></TabsTrigger>
+                  <TabsTrigger value="artifacts"><Box />制品<span className="ml-1 text-muted-foreground tabular">{arts.length}</span></TabsTrigger>
+                </TabsList>
+              </div>
+              <TabsContent value="events" className="mt-0 min-h-0 flex-1"><EventStream log={log} loading={logLoading} live={live} /></TabsContent>
+              <TabsContent value="diff" className="mt-0 min-h-0 flex-1 overflow-auto scrollbar-thin"><PatchView artifacts={arts} /></TabsContent>
+              <TabsContent value="checks" className="mt-0 min-h-0 flex-1 overflow-auto scrollbar-thin"><ChecksView items={checkItems} note={checks.data?.note} loading={checks.isLoading} /></TabsContent>
+              <TabsContent value="artifacts" className="mt-0 min-h-0 flex-1 overflow-auto scrollbar-thin">
+                {arts.length === 0 ? <Empty icon={<Box />} title="还没有制品" /> : (
+                  <ul className="divide-y">
+                    {arts.map((a) => (
+                      <li key={a.id} className="flex items-center gap-3 px-4 py-2.5 text-[13px]">
+                        <Badge tone="neutral" className="font-mono">{a.kind}</Badge>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{shortId(a.digest, 16)}</span>
+                        <span className="text-xs text-muted-foreground tabular">{bytes(a.bytes)}</span>
+                        <Badge tone={a.status === 'present' ? 'success' : a.status === 'tampered' ? 'danger' : 'warning'}>{a.status === 'present' ? '完整' : a.status === 'tampered' ? '摘要不符' : '缺失'}</Badge>
+                        {a.status === 'present' ? <a className="text-xs font-medium text-primary hover:underline" href={`/api/v1/artifacts/${a.id}/download`}>下载</a> : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </TabsContent>
+            </Tabs>
+          </Card>
+
+          {/* Right: verdict, timing, cost, runtime, reviews */}
+          <div className="space-y-4">
+            {current ? <VerdictCard attempt={current} checks={checkItems} /> : null}
+            {current ? <TimingCard runtime={current.runtime} /> : null}
+            {current ? <UsageCard attemptId={current.id} /> : null}
+            {current ? <RuntimeCard runtime={current.runtime} /> : null}
+            {current ? <Reviews attemptId={current.id} /> : null}
+          </div>
+        </div>
+      </PageBody>
+    </>
+  )
+}
+
+function TrialActions({ trial }: { trial: Trial }) {
   const [reason, setReason] = useState('')
-  const [error, setError] = useState('')
-  const [note, setNote] = useState('')
-  const [loading, setLoading] = useState(true)
-
-  function load() {
-    return api.request<{ trial: Trial; attempts: Attempt[] | null }>('GET', `/api/v1/trials/${id}`).then(async (data) => {
-      setTrial(data.trial)
-      const list = data.attempts || []
-      setAttempts(list)
-      const current = list[list.length - 1]
-      if (!current) return
-      const checkData = await api.request<{ items: string[] | null; note: string }>('GET', `/api/v1/attempts/${current.ID}/checks`)
-      setChecks(checkData.items || [])
-      setNote(checkData.note)
-      const usageData = await api.request<Usage>('GET', `/api/v1/attempts/${current.ID}/usage`)
-      setUsage(usageData)
-      const reviewData = await api.request<{ items: string[] | null }>('GET', `/api/v1/attempts/${current.ID}/reviews`)
-      setReviews(reviewData.items || [])
-      const artifactData = await api.request<{ items: Artifact[] | null }>('GET', `/api/v1/attempts/${current.ID}/artifacts`)
-      const items = artifactData.items || []
-      setArtifacts(items)
-      const patchItem = items.find((item) => item.kind === 'patch' && item.status !== 'missing')
-      if (patchItem) {
-        const file = await fetch(`/api/v1/artifacts/${patchItem.id}/download`, { credentials: 'include' })
-        setPatch(await file.text())
-      } else {
-        setPatch('')
-      }
-    })
-  }
-  useEffect(() => { load().catch((err: Error) => setError(err.message)).finally(() => setLoading(false)) }, [id])
-
-  const current = attempts[attempts.length - 1]
-  const live = current && !['completed', 'cancelled', 'aborted'].includes(current.State)
-
-  useEffect(() => {
-    if (!current) return
-    let stop = false
-    let source: EventSource | null = null
-    const replay = () => fetch(`/api/v1/attempts/${current.ID}/events?once=1`, { credentials: 'include' })
-      .then((res) => res.text())
-      .then((text) => { if (!stop) setEvents(text || '没有可回放的事件。') })
-      .catch(() => { if (!stop) setEvents('没有可回放的事件。') })
-    void replay()
-    if (typeof EventSource !== 'undefined') {
-      source = new EventSource(`/api/v1/attempts/${current.ID}/events`, { withCredentials: true })
-      source.onmessage = () => { void replay() }
-      source.addEventListener('gap', () => { if (!stop) setEvents((prev) => prev + '\n事件序号有缺口，需要完整快照。') })
-    }
-    const timer = window.setInterval(() => { void replay(); if (live) void load().catch(() => undefined) }, 2000)
-    return () => {
-      stop = true
-      source?.close()
-      window.clearInterval(timer)
-    }
-  }, [current?.ID, live])
-
-  const calibrated = events.includes('copied solution files')
+  const [open, setOpen] = useState(false)
+  const inv = [['trial', trial.id], ['experiment', trial.experiment_id], ['overview']]
+  const retry = useAction(() => api.request('POST', `/api/v1/trials/${trial.id}/attempts`, { reason: reason.trim() }), {
+    success: '已记录重试原因，等待调度',
+    invalidate: inv,
+    onSuccess: () => { setReason(''); setOpen(false) },
+  })
+  const adopt = useAction(() => api.request<{ note: string }>('POST', `/api/v1/trials/${trial.id}/adopt`), { success: (d) => d.note })
+  const cancel = useAction(() => api.request<{ note: string }>('POST', `/api/v1/trials/${trial.id}/cancel`), { success: (d) => d.note, invalidate: inv })
+  const terminal = terminalStates.has(trial.execution_state)
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-2xl">运行详情</h1>
-      {error ? <Notice tone="warn">{error}</Notice> : null}
-      {loading && !trial ? <Notice>正在读取。</Notice> : null}
-      {trial ? (
-        <Card>
-          <p>阶段：{label(executionLabel, trial.ExecutionState)}</p>
-          <p>当前 Trial 行：{label(verdictLabel, trial.Verdict)}。对比和实验摘要使用第一次物理执行的结论。</p>
-          <p>清理：{current ? label(cleanupLabel, current.CleanupState) : '尚未启动'}</p>
-          <p className="mt-2 text-sm text-[#6b6258]">任务版本 {trial.TaskVersionID || '未知'} · 配置版本 {trial.ProfileVersionID || '未知'} · 开始 {current?.CreatedAt || '未知'} · 费用预算 未知。{phaseLine(current?.RuntimeJSON)}</p>
-          <p className="mt-2 text-sm text-[#6b6258]">native-trusted：本机进程，HOME 是这次运行的空目录。同一用户仍能读到控制面文件，这不是容器隔离。Agent 自己说的 PASS 不会变成这里的结论。</p>
-        </Card>
+    <>
+      {!terminal ? (
+        <ConfirmButton danger variant="danger-outline" icon={<Ban />} title="取消这个 Trial？" description="会记录取消意图。运行中的进程需要等清理完成才会停止；已产生的费用不会退回。" confirmLabel="取消 Trial" onConfirm={() => cancel.mutateAsync(undefined)} disabled={trial.cancel_requested}>
+          {trial.cancel_requested ? '取消中' : '取消'}
+        </ConfirmButton>
       ) : null}
-      {calibrated ? <Notice tone="warn">这次通过来自参考解校准：事件里有 copied solution files。这是假 CLI 的校准路径，不是一次未标明的模型运行。</Notice> : null}
-      <Card title="每次 Attempt">
-        {attempts.length === 0 ? <p className="text-sm">还没有 Attempt。</p> : (
-          <ul className="flex flex-col gap-2 text-sm">
-            {attempts.map((attempt) => (
-              <li key={attempt.ID}>第 {attempt.Number} 次 · {label(executionLabel, attempt.State)} · {label(verdictLabel, attempt.Verdict)} · 清理 {label(cleanupLabel, attempt.CleanupState)}{attempt.Reason ? ` · ${attempt.Reason}` : ''}</li>
-            ))}
-          </ul>
-        )}
-        {attempts.length > 1 ? <p className="mt-2 text-sm">第一次的结论单独保留。后来的人工重试不会改写它，也不会进入首 Attempt 通过率。</p> : null}
-      </Card>
-      <Card title="差异">
-        {patch ? <PatchView raw={patch} /> : <p className="text-sm">还没有改动包。这里只显示文本，不会执行 Agent 输出。</p>}
-      </Card>
-      <Card title="制品">
-        {artifacts.length === 0 ? <p className="text-sm">还没有制品。</p> : (
-          <ul className="text-sm">
-            {artifacts.map((item) => (
-              <li key={item.id}>{item.kind} · {item.status} · {item.bytes} 字节 {item.status !== 'missing' ? <a className="underline" href={`/api/v1/artifacts/${item.id}/download`} target="_blank" rel="noreferrer">下载</a> : null}</li>
-            ))}
-          </ul>
-        )}
-      </Card>
-      <Card title="独立证据">
-        {checks.length === 0 ? <p className="text-sm">还没有检查结果。</p> : checks.map((item) => <pre key={item} className="mb-2 overflow-x-auto whitespace-pre-wrap text-xs">{item}</pre>)}
-        {note ? <p className="text-sm">{note}</p> : null}
-      </Card>
-      <Card title="用量">
-        <p>费用：{money(usage?.cost_microusd)}</p>
-        <p className="text-sm">输入 token：{usage?.input_tokens ?? '未知'}。输出 token：{usage?.output_tokens ?? '未知'}。{usage?.note}</p>
-      </Card>
-      <Card title="事件">
-        {events.includes('event_buffer_8MiB') || events.includes('"truncated":true') ? <p className="mb-2 text-sm">原始输出带截断标记。下载的事件文件不是被裁掉之后假装完整的文本。</p> : null}
-        <EventView text={events} showAll={showAllEvents} />
-        {eventDocuments(events).length > 80 ? <Button tone="quiet" className="mt-2" onClick={() => setShowAllEvents((v) => !v)}>{showAllEvents ? '只看一段' : '展开全部'}</Button> : null}
-      </Card>
-      <Card title="人工意见">
-        {reviews.length === 0 ? <p className="mb-2 text-sm">还没有意见。</p> : (
-          <ul className="mb-2 flex flex-col gap-2 text-sm">
-            {reviews.map((item) => <li key={item} className="whitespace-pre-wrap rounded bg-[#efeae2] px-2 py-1">{item}</li>)}
-          </ul>
-        )}
-        <TextArea value={review} onChange={(e) => setReview(e.target.value)} placeholder="意见会单独保存，不能把未通过改成通过。" />
-        <label className="mt-2 flex items-start gap-2 text-sm"><input type="checkbox" checked={blind} onChange={(e) => setBlind(e.target.checked)} /><span>盲评：不附带模型名称。同一条 rubric，上下文预算 8192 字节。证据不够就写不够。</span></label>
-        <Button className="mt-2" disabled={!current || !review} onClick={() => void api.request('POST', `/api/v1/attempts/${current.ID}/reviews`, { kind: 'note', body: review, blind, rubric: '可读性、维护成本和潜在缺陷。证据不足就写不足，不要求打分。', context_budget_bytes: 8192 }).then(() => { setReview(''); return load() }).catch((err: Error) => setError(err.message))}>保存意见</Button>
-      </Card>
-      <Card title="人工重试">
-        <Input placeholder="必须写明原因" value={reason} onChange={(e) => setReason(e.target.value)} />
-        <Button className="mt-2" disabled={!trial || !reason.trim()} onClick={() => void api.request('POST', `/api/v1/trials/${trial!.ID}/attempts`, { reason: reason.trim() }).then(() => { setReason(''); return load() }).catch((err: Error) => setError(err.message))}>按这个原因再跑一次</Button>
-        <p className="mt-2 text-sm text-[#6b6258]">新 Attempt 不会改写上一次的结论。</p>
-        <Button tone="quiet" className="mt-2" disabled={!trial} onClick={() => void api.request<{ note: string }>('POST', `/api/v1/trials/${trial!.ID}/adopt`).then((data) => setNote(data.note)).catch((err: Error) => setError(err.message))}>只记录采纳这个补丁</Button>
-      </Card>
-    </div>
+      {terminal && trial.execution_state === 'completed' ? (
+        <ConfirmButton icon={<GitPullRequestArrow />} title="记录采纳这个补丁？" description="只在审计里记录「采纳」，不会写入源目录，也不会自动合并。" confirmLabel="记录采纳" onConfirm={() => adopt.mutateAsync(undefined)}>采纳补丁</ConfirmButton>
+      ) : null}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild><Button size="sm" disabled={!terminal}><RotateCcw />人工重试</Button></DialogTrigger>
+        <DialogContent
+          title="人工重试"
+          description="新 Attempt 不会改写第一次的结论，也不会计入首轮通过率。重试会在审计里记作一次人工干预。"
+          footer={<><Button variant="outline" size="sm" onClick={() => setOpen(false)}>取消</Button><Button size="sm" disabled={!reason.trim()} loading={retry.isPending} onClick={() => retry.mutate(undefined)}>按此原因重试</Button></>}
+        >
+          <Field label="重试原因" hint="必填。写清楚为什么要重跑，例如「网络抖动导致 npm install 失败」。">
+            <Textarea autoFocus rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </Field>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
-function phaseLine(raw?: string) {
-  if (!raw) return '阶段耗时还没有。'
-  try {
-    const doc = JSON.parse(raw) as { phases?: { agent_ms?: number; end_to_end_ms?: number; verify_ms?: number; queue_ms?: number } }
-    const phases = doc.phases
-    if (!phases) return '阶段耗时还没有。'
-    return `排队 ${phases.queue_ms ?? '未知'} ms，Agent ${phases.agent_ms ?? '未知'} ms，验收 ${phases.verify_ms ?? '未知'} ms，端到端 ${phases.end_to_end_ms ?? '未知'} ms。`
-  } catch {
-    return '阶段耗时还没有。'
-  }
-}
-
-function PatchView({ raw }: { raw: string }) {
-  try {
-    const doc = JSON.parse(raw) as { changes?: { path?: string; action?: string; size?: number; binary?: boolean }[] }
-    if (!doc.changes || doc.changes.length === 0) {
-      return <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs">{raw}</pre>
-    }
-    return (
-      <ul className="flex flex-col gap-2 text-xs">
-        {doc.changes.map((change) => (
-          <li key={change.path} className="rounded bg-[#efeae2] px-2 py-1">
-            <p>{change.action} {change.path} · {change.size ?? 0} 字节{change.binary ? ' · 二进制' : ''}</p>
-          </li>
-        ))}
-      </ul>
-    )
-  } catch {
-    return <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs">{raw}</pre>
-  }
-}
-
-function eventDocuments(text: string) {
-  const out: string[] = []
-  let data: string[] = []
-  const flush = () => {
-    if (data.length === 0) return
-    const payload = data.join('\n').trim()
-    if (payload) out.push(payload)
-    data = []
-  }
-  for (const line of text.split('\n')) {
-    if (line === '') {
-      flush()
-      continue
-    }
-    if (line.startsWith('data:')) {
-      data.push(line.slice(5).trim())
-      continue
-    }
-    if (line.startsWith('id:') || line.startsWith('event:') || line.startsWith(':')) continue
-    flush()
-    const raw = line.trim()
-    if (raw.startsWith('{')) out.push(raw)
-  }
-  flush()
-  return out
-}
-
-function EventView({ text, showAll }: { text: string; showAll: boolean }) {
-  const docs = eventDocuments(text)
-  const visible = showAll ? docs : docs.slice(0, 80)
-  const groups = new Map<string, string[]>()
-  let phase = '未分阶段'
-  for (const line of visible) {
-    try {
-      const doc = JSON.parse(line) as { type?: string; payload?: { phase?: string } }
-      if (doc.type === 'PhaseChanged' && doc.payload?.phase) phase = doc.payload.phase
-    } catch {
-      phase = phase
-    }
-    const list = groups.get(phase) || []
-    list.push(line)
-    groups.set(phase, list)
-  }
+function VerdictCard({ attempt, checks }: { attempt: Attempt; checks: string[] }) {
+  const parsed = checks.map((c) => { try { return JSON.parse(c) as { Outcome?: string; Required?: boolean } } catch { return {} } })
+  const req = parsed.filter((c) => c.Required)
+  const reqPass = req.filter((c) => c.Outcome === 'pass').length
+  const done = attempt.state === 'completed'
+  const bg = !done ? 'from-info/10' : attempt.verdict === 'pass' ? 'from-success/12' : attempt.verdict === 'fail' ? 'from-danger/12' : 'from-warning/12'
   return (
-    <div className="flex max-h-80 flex-col gap-2 overflow-auto">
-      {[...groups.entries()].map(([name, rows]) => (
-        <details key={name} open>
-          <summary className="text-sm">{name} · {rows.length} 行</summary>
-          <pre className="whitespace-pre-wrap text-xs">{rows.join('\n')}</pre>
-        </details>
-      ))}
+    <Card className={cn('overflow-hidden bg-gradient-to-b to-card', bg)}>
+      <CardBody className="space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-medium text-muted-foreground">第 {attempt.number} 次 · 独立验收结论</p>
+          <StateBadge state={attempt.state} />
+        </div>
+        {done ? <VerdictBadge verdict={attempt.verdict} className="h-7 px-3 text-sm" /> : <p className="text-sm text-muted-foreground">{lookup(execLabel, attempt.state)}，尚无结论</p>}
+        {req.length ? <p className="text-xs text-muted-foreground">必需检查 <span className="font-medium text-foreground tabular">{reqPass}/{req.length}</span> 通过 · 共 {parsed.length} 项</p> : null}
+        {attempt.reason ? <p className="rounded-md bg-muted/60 px-2.5 py-1.5 text-xs text-muted-foreground">{attempt.reason}</p> : null}
+        <p className="text-[11px] leading-relaxed text-muted-foreground">Agent 自己说的 PASS 不会变成这里的结论；人工意见也不能改写它。</p>
+      </CardBody>
+    </Card>
+  )
+}
+
+function TimingCard({ runtime }: { runtime: Runtime | null }) {
+  const p = runtime?.phases
+  const rows = [
+    { k: '排队', v: p?.queue_ms, c: 'bg-muted-foreground/40' },
+    { k: 'Agent', v: p?.agent_ms, c: 'bg-primary' },
+    { k: '验收', v: p?.verify_ms, c: 'bg-success' },
+  ]
+  const total = rows.reduce((a, r) => a + (r.v ?? 0), 0)
+  return (
+    <Card>
+      <CardHeader title="耗时" icon={<Clock />} actions={<span className="text-xs text-muted-foreground tabular">端到端 {duration(p?.end_to_end_ms)}</span>} />
+      <CardBody className="space-y-3">
+        {total > 0 ? (
+          <div className="flex h-2 overflow-hidden rounded-full bg-muted">
+            {rows.map((r) => (r.v ? <div key={r.k} className={r.c} style={{ width: `${(r.v / total) * 100}%` }} /> : null))}
+          </div>
+        ) : null}
+        <div className="grid grid-cols-3 gap-2">
+          {rows.map((r) => (
+            <div key={r.k}>
+              <p className="flex items-center gap-1 text-[11px] text-muted-foreground"><span className={`size-1.5 rounded-full ${r.c}`} />{r.k}</p>
+              <p className="text-[13px] font-medium tabular">{duration(r.v)}</p>
+            </div>
+          ))}
+        </div>
+      </CardBody>
+    </Card>
+  )
+}
+
+function UsageCard({ attemptId }: { attemptId: string }) {
+  const { data } = useAttemptUsage(attemptId)
+  const cost = data?.cost_microusd
+  return (
+    <Card>
+      <CardHeader title="用量" actions={data?.confidence ? <Badge tone={data.confidence === 'exact' ? 'success' : 'neutral'}>{data.confidence === 'unknown' ? '未知' : data.confidence}</Badge> : null} />
+      <CardBody className="space-y-2">
+        <div className="grid grid-cols-3 gap-2">
+          <Metric label="输入" value={num(data?.input_tokens)} />
+          <Metric label="缓存" value={num(data?.cached_input_tokens)} />
+          <Metric label="输出" value={num(data?.output_tokens)} />
+        </div>
+        <div className="flex items-baseline justify-between border-t pt-2">
+          <span className="text-xs text-muted-foreground">费用</span>
+          <span className="text-[13px] font-medium tabular">{cost === null || cost === undefined ? '未知' : `$${(cost / 1e6).toFixed(4)}`}</span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">{data?.note ?? '空值表示未知，不是零。'}{data?.billing_path ? ` · ${data.billing_path}` : ''}</p>
+      </CardBody>
+    </Card>
+  )
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div><p className="text-[11px] text-muted-foreground">{label}</p><p className="text-[13px] font-medium tabular">{value}</p></div>
+}
+
+function RuntimeCard({ runtime }: { runtime: Runtime | null }) {
+  if (!runtime) return null
+  const sb = runtime.sandbox
+  const sandboxed = sb?.mode === 'landlock'
+  return (
+    <Card>
+      <CardHeader title="运行环境" icon={sandboxed ? <ShieldCheck className="text-success" /> : <ShieldOff className="text-warning" />} />
+      <CardBody className="space-y-3">
+        <KeyValue items={[
+          { label: '执行器', value: runtime.executor ?? '—', mono: true },
+          { label: '隔离', value: runtime.isolation ?? '—', mono: true },
+          { label: '网络', value: runtime.network ?? '—', mono: true },
+          { label: 'HOME', value: runtime.home_inherited ? <Badge tone="warning">继承真实 HOME</Badge> : <span className="text-xs">本次运行的空目录</span> },
+          ...(runtime.credential_env?.length ? [{ label: '凭据变量', value: <span className="font-mono text-xs">{runtime.credential_env.join(', ')}</span> }] : []),
+          ...(runtime.budget?.wall_seconds ? [{ label: '墙钟上限', value: `${runtime.budget.wall_seconds}s${runtime.budget.wall_source ? ` · ${runtime.budget.wall_source}` : ''}` }] : []),
+          ...(runtime.requested_model ? [{ label: '模型', value: <span className="font-mono text-xs">{runtime.requested_model}{runtime.resolved_model && runtime.resolved_model !== runtime.requested_model ? ` → ${runtime.resolved_model}` : ''}</span> }] : []),
+        ]} />
+        {runtime.model_resolution_mismatch ? <Alert tone="warning">实际模型与请求不一致，这个 Trial 在对比中标记为不可比。</Alert> : null}
+        {sb ? (
+          <div className="rounded-lg border p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium">文件系统沙箱</p>
+              <Badge tone={sandboxed ? 'success' : sb.mode === 'disabled' ? 'warning' : 'neutral'}>{sandboxed ? `Landlock ABI ${sb.abi ?? '?'}` : sb.mode}</Badge>
+            </div>
+            {sb.reason ? <p className="mt-1.5 text-[11px] text-muted-foreground">{sb.reason}</p> : null}
+            {sb.read_write?.length ? <PathList label="可写" paths={sb.read_write} /> : null}
+            {sb.exposed?.length ? <PathList label="系统目录中可见的数据" paths={sb.exposed} warn /> : null}
+            {sb.limits ? <p className="mt-2 text-[11px] text-muted-foreground">{sb.limits}</p> : null}
+          </div>
+        ) : null}
+        {runtime.limitation ? <p className="text-[11px] leading-relaxed text-muted-foreground">{runtime.limitation}</p> : null}
+      </CardBody>
+    </Card>
+  )
+}
+
+function PathList({ label, paths, warn }: { label: string; paths: string[]; warn?: boolean }) {
+  return (
+    <div className="mt-2">
+      <p className={cn('text-[11px]', warn ? 'text-warning' : 'text-muted-foreground')}>{label}</p>
+      <ul className="mt-0.5 space-y-0.5">{paths.map((p) => <li key={p} className="truncate font-mono text-[11px]" title={p}>{p}</li>)}</ul>
     </div>
   )
 }
+
+function Reviews({ attemptId }: { attemptId: string }) {
+  const { data } = useAttemptReviews(attemptId)
+  const [body, setBody] = useState('')
+  const [blind, setBlind] = useState(true)
+  const save = useAction(() => api.request('POST', `/api/v1/attempts/${attemptId}/reviews`, { kind: 'note', body: body.trim(), blind, context_budget_bytes: 8192 }), {
+    success: '意见已保存',
+    invalidate: [['reviews', attemptId]],
+    onSuccess: () => setBody(''),
+  })
+  const items = (data?.items ?? []).map((raw) => { try { return JSON.parse(raw) as { body?: string; blind?: boolean } } catch { return { body: raw } } })
+  return (
+    <Card>
+      <CardHeader title="人工意见" icon={<MessageSquareText />} description={data?.note} />
+      <CardBody className="space-y-3">
+        {items.length ? (
+          <ul className="space-y-2">
+            {items.map((r, i) => (
+              <li key={i} className="rounded-md bg-muted/60 px-3 py-2 text-[13px]">
+                <p className="whitespace-pre-wrap">{r.body}</p>
+                {r.blind ? <p className="mt-1 text-[11px] text-muted-foreground">盲评 · 未附带模型名称</p> : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <Textarea rows={3} placeholder="可读性、维护成本、潜在缺陷…证据不足就写不足。意见不能把未通过改成通过。" value={body} onChange={(e) => setBody(e.target.value)} />
+        <div className="flex items-center justify-between">
+          <Tooltip content="不附带模型名称；上下文预算 8192 字节">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground"><Switch checked={blind} onCheckedChange={setBlind} />盲评</label>
+          </Tooltip>
+          <Button size="sm" disabled={!body.trim()} loading={save.isPending} onClick={() => save.mutate(undefined)}>保存意见</Button>
+        </div>
+      </CardBody>
+    </Card>
+  )
+}
+

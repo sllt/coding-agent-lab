@@ -37,8 +37,8 @@ func TestLaunchArgsStayDistinctAndDoNotApproveByDefault(t *testing.T) {
 		t.Fatalf("opencode %v %v", oc.Args, err)
 	}
 	for _, probe := range []Adapter{Cursor{}, Grok{}, OpenCode{}} {
-		caps, err := probe.Probe(ctx, ProbeRequest{})
-		if err != nil || caps.Probed || caps.SupportsHeadless || caps.Verified {
+		caps, err := probe.Probe(ctx, ProbeRequest{Executable: "agentlab-cli-that-does-not-exist"})
+		if err != nil || caps.SupportsHeadless || caps.Verified || Readiness(caps.Readiness).Runnable() || caps.Readiness != string(ReadinessUnavailable) {
 			t.Fatalf("%s probe claimed support %+v %v", probe.Name(), caps, err)
 		}
 	}
